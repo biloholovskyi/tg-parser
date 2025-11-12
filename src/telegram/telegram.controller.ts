@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { AuthResponseDto, CompleteAuthDto } from './dto/auth.dto';
 import { GetPostsResponse } from './interfaces/message.interface';
 import { TelegramService } from './telegram.service';
@@ -47,11 +57,11 @@ export class TelegramController {
   @Get('channel/:channelUsername/posts')
   async getChannelPosts(
     @Param('channelUsername') channelUsername: string,
-    @Query('sessionString') sessionString: string,
+    @Query('sessionString') sessionString?: string,
     @Query('hoursBack') hoursBack?: string,
   ): Promise<GetPostsResponse> {
     if (!sessionString) {
-      throw new Error('sessionString query parameter is required');
+      throw new BadRequestException('sessionString query parameter is required');
     }
 
     // Fix URL encoding: replace spaces back to + (spaces are decoded + in URL)
@@ -62,7 +72,7 @@ export class TelegramController {
 
     // Валидация
     if (isNaN(hours) || hours < 1 || hours > 720) {
-      throw new Error('hoursBack must be a number between 1 and 720');
+      throw new BadRequestException('hoursBack must be a number between 1 and 720');
     }
 
     return await this.telegramService.getChannelPosts(channelUsername, fixedSessionString, hours);

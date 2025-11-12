@@ -79,6 +79,7 @@ export class TelegramService {
         await Promise.race([connectPromise, timeoutPromise]);
 
         // Таймаут для отправки кода (30 секунд)
+        // sendCode принимает apiId и apiHash как параметры конструктора, не здесь
         const sendCodePromise = client.sendCode(
           {
             apiId: this.config.apiId,
@@ -297,6 +298,12 @@ export class TelegramService {
       console.log('[getChannelPosts] Getting client from session...');
       const client = this.getClient(sessionString);
       console.log('[getChannelPosts] Client obtained successfully');
+
+      // Убеждаемся, что клиент подключен
+      if (!client.connected) {
+        console.log('[getChannelPosts] Client not connected, connecting...');
+        await client.connect();
+      }
 
       // Вычисляем время начала периода
       const startTime = Math.floor(Date.now() / 1000) - hoursBack * 3600;
