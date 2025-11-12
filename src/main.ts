@@ -2,6 +2,17 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
+  // Обработка необработанных ошибок
+  process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    process.exit(1);
+  });
+
   try {
     const app = await NestFactory.create(AppModule, {
       logger: ['error', 'warn', 'log'],
@@ -18,6 +29,7 @@ async function bootstrap() {
     // Слушаем на всех интерфейсах для Railway
     await app.listen(port, '0.0.0.0');
 
+    // Немедленно логируем готовность - Railway может проверять health check сразу
     console.log(`🚀 Telegram Parser Service running on port ${port}`);
     console.log(`✅ Health check available at http://0.0.0.0:${port}/`);
     console.log(`✅ Application is ready to accept requests`);
@@ -27,6 +39,7 @@ async function bootstrap() {
       console.log('SIGTERM received, shutting down gracefully...');
       try {
         await app.close();
+        console.log('Application closed successfully');
       } catch (error) {
         console.error('Error during shutdown:', error);
       }
@@ -37,6 +50,7 @@ async function bootstrap() {
       console.log('SIGINT received, shutting down gracefully...');
       try {
         await app.close();
+        console.log('Application closed successfully');
       } catch (error) {
         console.error('Error during shutdown:', error);
       }

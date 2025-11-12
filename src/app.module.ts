@@ -7,13 +7,15 @@ class AppController {
   @Get()
   @HttpCode(HttpStatus.OK)
   root() {
-    return { status: 'ok', service: 'telegram-parser', timestamp: new Date().toISOString() };
+    // Максимально быстрый ответ для Railway health check
+    return { status: 'ok', service: 'telegram-parser' };
   }
 
   @Get('health')
   @HttpCode(HttpStatus.OK)
   health() {
-    return { status: 'ok', timestamp: new Date().toISOString() };
+    // Максимально быстрый ответ для Railway health check
+    return { status: 'ok' };
   }
 }
 
@@ -29,4 +31,3 @@ class AppController {
   providers: [],
 })
 export class AppModule {}
-
