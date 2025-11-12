@@ -8,6 +8,16 @@ export class TelegramController {
   constructor(private readonly telegramService: TelegramService) {}
 
   /**
+   * GET /telegram/health
+   * Health check endpoint для Railway
+   */
+  @Get('health')
+  @HttpCode(HttpStatus.OK)
+  health() {
+    return { status: 'ok', timestamp: new Date().toISOString() };
+  }
+
+  /**
    * POST /telegram/auth
    * Авторизация пользователя через Telegram
    *

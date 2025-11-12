@@ -53,23 +53,37 @@ export class TelegramService {
     needsPassword?: boolean;
     message: string;
   }> {
+    let client: TelegramClient | null = null;
     try {
       // Шаг 1: Отправка кода (если код еще не запрошен)
       if (!phoneCode) {
-        const client = this.createClient();
-        await client.connect();
+        client = this.createClient();
 
-        const result = await client.sendCode(
+        // Таймаут для подключения (30 секунд)
+        const connectPromise = client.connect();
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Connection timeout')), 30000),
+        );
+
+        await Promise.race([connectPromise, timeoutPromise]);
+
+        // Таймаут для отправки кода (30 секунд)
+        const sendCodePromise = client.sendCode(
           {
             apiId: this.config.apiId,
             apiHash: this.config.apiHash,
           },
           phoneNumber,
         );
+        const sendCodeTimeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Send code timeout')), 30000),
+        );
+
+        const result = (await Promise.race([sendCodePromise, sendCodeTimeoutPromise])) as any;
 
         // Сохраняем состояние для следующего запроса
         this.authStates.set(phoneNumber, {
-          client,
+          client: client!,
           phoneCodeHash: result.phoneCodeHash,
           phoneNumber,
         });
@@ -87,13 +101,19 @@ export class TelegramService {
       }
 
       try {
-        await authState.client.invoke(
+        // Таймаут для проверки кода (30 секунд)
+        const signInPromise = authState.client.invoke(
           new Api.auth.SignIn({
             phoneNumber: phoneNumber,
             phoneCodeHash: authState.phoneCodeHash,
             phoneCode: phoneCode,
           }),
         );
+        const signInTimeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Sign in timeout')), 30000),
+        );
+
+        await Promise.race([signInPromise, signInTimeoutPromise]);
 
         // Успешная авторизация
         const sessionString = (authState.client.session as StringSession).save();
@@ -125,16 +145,27 @@ export class TelegramService {
           }
 
           // Шаг 3: Проверка 2FA пароля
-          const passwordInfo = await authState.client.invoke(new Api.account.GetPassword());
+          const getPasswordPromise = authState.client.invoke(new Api.account.GetPassword());
+          const getPasswordTimeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Get password timeout')), 30000),
+          );
+          const passwordInfo = (await Promise.race([
+            getPasswordPromise,
+            getPasswordTimeoutPromise,
+          ])) as any;
 
           // Вычисляем SRP hash для пароля
           const passwordSrp = await computeCheck(passwordInfo, password);
 
-          await authState.client.invoke(
+          const checkPasswordPromise = authState.client.invoke(
             new Api.auth.CheckPassword({
               password: passwordSrp,
             }),
           );
+          const checkPasswordTimeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Check password timeout')), 30000),
+          );
+          await Promise.race([checkPasswordPromise, checkPasswordTimeoutPromise]);
 
           const sessionString = (authState.client.session as StringSession).save();
 
@@ -166,11 +197,25 @@ export class TelegramService {
       // Очистка состояния при ошибке
       const authState = this.authStates.get(phoneNumber);
       if (authState) {
-        await authState.client.disconnect();
+        try {
+          await authState.client.disconnect().catch(() => {});
+        } catch (e) {
+          // Игнорируем ошибки при отключении
+        }
         this.authStates.delete(phoneNumber);
       }
 
-      throw new BadRequestException(`Authentication failed: ${error.message}`);
+      // Очистка клиента, если он был создан, но не сохранен
+      if (client && !this.clients.has((client.session as StringSession).save())) {
+        try {
+          await client.disconnect().catch(() => {});
+        } catch (e) {
+          // Игнорируем ошибки при отключении
+        }
+      }
+
+      const errorMessage = error.message || 'Unknown error';
+      throw new BadRequestException(`Authentication failed: ${errorMessage}`);
     }
   }
 
