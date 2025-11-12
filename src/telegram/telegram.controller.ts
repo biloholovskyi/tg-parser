@@ -7,10 +7,6 @@ import { TelegramService } from './telegram.service';
 export class TelegramController {
   constructor(private readonly telegramService: TelegramService) {}
 
-  /**
-   * GET /telegram/health
-   * Health check endpoint для Railway
-   */
   @Get('health')
   @HttpCode(HttpStatus.OK)
   health() {
