@@ -22,7 +22,13 @@ export class TelegramService {
 
   constructor() {
     // Загружаем конфигурацию после того как ConfigModule загрузил .env
-    this.config = getTelegramConfig();
+    // Не валидируем при создании - только при использовании
+    try {
+      this.config = getTelegramConfig();
+    } catch (error) {
+      console.warn('[TelegramService] Config not loaded, will fail on first use:', error.message);
+      this.config = { apiId: 0, apiHash: '' };
+    }
 
     // Отслеживаем инстансы
     TelegramService.instanceCount++;
@@ -53,6 +59,11 @@ export class TelegramService {
     needsPassword?: boolean;
     message: string;
   }> {
+    // Валидация конфигурации при использовании
+    if (!this.config.apiId || !this.config.apiHash) {
+      throw new Error('TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured');
+    }
+
     let client: TelegramClient | null = null;
     try {
       // Шаг 1: Отправка кода (если код еще не запрошен)
