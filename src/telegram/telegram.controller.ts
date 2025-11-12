@@ -8,35 +8,6 @@ export class TelegramController {
   constructor(private readonly telegramService: TelegramService) {}
 
   /**
-   * GET /telegram/auth
-   * Информация об использовании эндпоинта авторизации
-   */
-  @Get('auth')
-  getAuthInfo() {
-    return {
-      error: 'This is a POST endpoint, not GET',
-      message: 'Please use POST method with JSON body',
-      usage: {
-        method: 'POST',
-        url: '/telegram/auth',
-        body: {
-          phoneNumber: '+79991234567',
-          phoneCode: '12345',
-          password: 'optional_2fa_password',
-        },
-      },
-      steps: [
-        '1. Send only phoneNumber to receive SMS code',
-        '2. Send phoneNumber + phoneCode to authenticate',
-        '3. If 2FA enabled, send phoneNumber + phoneCode + password',
-      ],
-      example: `curl -X POST http://localhost:${process.env.PORT || 3000}/telegram/auth \\
-  -H "Content-Type: application/json" \\
-  -d '{"phoneNumber": "+79991234567"}'`,
-    };
-  }
-
-  /**
    * POST /telegram/auth
    * Авторизация пользователя через Telegram
    *
