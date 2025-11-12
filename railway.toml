@@ -9,6 +9,6 @@ restartPolicyMaxRetries = 10
 [service]
 name = "tg-parser"
 internal_port = 8080
-healthcheck_path = "/health"
+healthcheck_path = "/telegram/health"
 healthcheck_timeout = 30
 auto_start = true
