@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /c/Projects/tg-parser/.env*)",
+      "Bash(wc -l /c/Projects/tg-parser/src/**/*.ts)"
+    ]
+  }
+}

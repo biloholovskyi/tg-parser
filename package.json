@@ -1,6 +1,6 @@
 {
   "name": "tg-parser",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Telegram channel parser service built with NestJS",
   "author": "",
   "private": true,

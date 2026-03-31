@@ -1,4 +1,36 @@
-<!-- adc147cc-df40-4ebc-a161-6df41ef00259 c165332f-260a-4e0f-8fae-f2c0a1dc4898 -->
+---
+name: Railway Deploy & n8n Integration
+overview: ""
+todos:
+  - id: f88ee26d-1cf5-4041-994f-1caa6b3b7a92
+    content: Инициализировать NestJS проект и установить зависимости (telegram, @nestjs/*)
+    status: pending
+  - id: f02c3ab2-3623-4f32-8f2a-efd014b3e7a1
+    content: Создать конфигурацию и .env файл для TELEGRAM_API_ID/API_HASH
+    status: pending
+  - id: e88e0e6b-2663-494e-be89-143d83981ca4
+    content: Создать TelegramModule, TelegramService и TelegramController с базовой структурой
+    status: pending
+  - id: a5538437-52df-4434-9025-663f29d79c70
+    content: Реализовать POST /telegram/auth для получения session string
+    status: pending
+  - id: 756589d1-4895-459c-bad6-df19d84d55cc
+    content: Реализовать GET /telegram/channel/:channelUsername/posts для постов за 24 часа
+    status: pending
+  - id: 531dbea3-0c0c-4aaa-9598-05a5e75eefee
+    content: Создать railway.toml и настроить скрипты для деплоя
+    status: pending
+  - id: 4a302b17-36ec-4c7b-a277-b99482e5d88c
+    content: Добавить параметр hoursBack в API и postUrl в интерфейс TelegramPost
+    status: pending
+  - id: 24d8c0ec-8bfc-4c8b-af29-c5a632839f17
+    content: Проверить railway.toml и создать инструкцию RAILWAY_DEPLOYMENT.md
+    status: pending
+  - id: ec843980-3baa-4a77-9032-7977b53d2a45
+    content: Создать N8N_WORKFLOW_GUIDE.md с примером workflow и N8N_TELEGRAM_BOT.md
+    status: pending
+---
+
 # Railway Deploy & n8n Integration
 
 ## 1. Доработка API endpoint
@@ -71,15 +103,3 @@
 - Как получить bot token
 - Как подключить бота к n8n (Telegram Trigger node)
 - Пример команды и ожидаемого ответа
-
-### To-dos
-
-- [ ] Инициализировать NestJS проект и установить зависимости (telegram, @nestjs/*)
-- [ ] Создать конфигурацию и .env файл для TELEGRAM_API_ID/API_HASH
-- [ ] Создать TelegramModule, TelegramService и TelegramController с базовой структурой
-- [ ] Реализовать POST /telegram/auth для получения session string
-- [ ] Реализовать GET /telegram/channel/:channelUsername/posts для постов за 24 часа
-- [ ] Создать railway.toml и настроить скрипты для деплоя
-- [ ] Добавить параметр hoursBack в API и postUrl в интерфейс TelegramPost
-- [ ] Проверить railway.toml и создать инструкцию RAILWAY_DEPLOYMENT.md
-- [ ] Создать N8N_WORKFLOW_GUIDE.md с примером workflow и N8N_TELEGRAM_BOT.md
