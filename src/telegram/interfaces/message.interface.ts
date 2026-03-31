@@ -15,4 +15,3 @@ export interface GetPostsResponse {
   posts: TelegramPost[];
   count: number;
 }
-

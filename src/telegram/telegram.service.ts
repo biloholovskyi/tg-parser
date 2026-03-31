@@ -10,6 +10,7 @@ interface AuthState {
   client: TelegramClient;
   phoneCodeHash: string;
   phoneNumber: string;
+  createdAt: number;
 }
 
 @Injectable()
@@ -34,6 +35,22 @@ export class TelegramService {
     TelegramService.instanceCount++;
     this.instanceId = TelegramService.instanceCount;
     console.log(`[TelegramService] Created instance #${this.instanceId}`);
+
+    // TTL-очистка незавершённых authStates каждые 5 минут (таймаут — 10 минут)
+    const AUTH_STATE_TTL = 10 * 60 * 1000;
+    setInterval(
+      () => {
+        const now = Date.now();
+        for (const [phone, state] of this.authStates) {
+          if (now - state.createdAt > AUTH_STATE_TTL) {
+            state.client.disconnect().catch(() => {});
+            this.authStates.delete(phone);
+            console.log(`[TelegramService] Cleaned up expired authState for ${phone}`);
+          }
+        }
+      },
+      5 * 60 * 1000,
+    ).unref();
   }
 
   /**
@@ -68,6 +85,14 @@ export class TelegramService {
     try {
       // Шаг 1: Отправка кода (если код еще не запрошен)
       if (!phoneCode) {
+        // Если уже есть незавершённый authState — отключаем старый клиент
+        const existingState = this.authStates.get(phoneNumber);
+        if (existingState) {
+          existingState.client.disconnect().catch(() => {});
+          this.authStates.delete(phoneNumber);
+          console.log(`[authenticate] Cleaned up previous authState for ${phoneNumber}`);
+        }
+
         client = this.createClient();
 
         // Таймаут для подключения (30 секунд)
@@ -98,6 +123,7 @@ export class TelegramService {
           client: client!,
           phoneCodeHash: result.phoneCodeHash,
           phoneNumber,
+          createdAt: Date.now(),
         });
 
         return {
