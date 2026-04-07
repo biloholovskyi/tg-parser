@@ -434,6 +434,22 @@ export class TelegramService {
   }
 
   /**
+   * Проверяет валидность сессии — возвращает статус без пробрасывания исключений
+   */
+  async checkSession(sessionString: string): Promise<{ status: 'success' | 'failed' }> {
+    try {
+      const client = await this.getClient(sessionString);
+      if (!client.connected) {
+        await client.connect();
+      }
+      await client.invoke(new Api.users.GetUsers({ id: [new Api.InputUserSelf()] }));
+      return { status: 'success' };
+    } catch {
+      return { status: 'failed' };
+    }
+  }
+
+  /**
    * Отключает клиента
    */
   async disconnect(sessionString: string): Promise<void> {

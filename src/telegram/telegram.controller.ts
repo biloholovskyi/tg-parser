@@ -47,6 +47,22 @@ export class TelegramController {
   }
 
   /**
+   * GET /telegram/me
+   * Проверяет валидность сессии — всегда 200, status: success | failed
+   */
+  @Get('me')
+  @HttpCode(HttpStatus.OK)
+  async checkSession(
+    @Query('sessionString') sessionString?: string,
+  ): Promise<{ status: 'success' | 'failed' }> {
+    if (!sessionString) {
+      return { status: 'failed' };
+    }
+    const fixedSessionString = sessionString.replace(/ /g, '+');
+    return await this.telegramService.checkSession(fixedSessionString);
+  }
+
+  /**
    * GET /telegram/channel/:channelUsername/posts
    * Получает посты канала за указанный период
    *
