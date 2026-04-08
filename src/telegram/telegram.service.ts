@@ -85,19 +85,9 @@ export class TelegramService {
     try {
       // Шаг 1: Отправка кода (если код еще не запрошен)
       if (!phoneCode) {
-        // Если уже есть незавершённый authState — проверяем возраст
+        // Если уже есть незавершённый authState — отключаем старый клиент
         const existingState = this.authStates.get(phoneNumber);
         if (existingState) {
-          const age = Date.now() - existingState.createdAt;
-          if (age < 2 * 60 * 1000) {
-            // authState свежий (< 2 мин) — не вызываем sendCode повторно,
-            // чтобы не инвалидировать уже отправленный код
-            console.log(`[authenticate] Reusing fresh authState for ${phoneNumber} (age: ${Math.round(age / 1000)}s)`);
-            return {
-              needsCode: true,
-              message: 'Code already sent. Please enter the code from your Telegram app.',
-            };
-          }
           existingState.client.disconnect().catch(() => {});
           this.authStates.delete(phoneNumber);
           console.log(`[authenticate] Cleaned up previous authState for ${phoneNumber}`);
