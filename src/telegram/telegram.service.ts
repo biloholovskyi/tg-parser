@@ -1,4 +1,6 @@
 import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import * as fs from 'fs';
+import * as path from 'path';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { Api } from 'telegram/tl';
@@ -20,13 +22,18 @@ export class TelegramService {
   private clients: Map<string, TelegramClient> = new Map();
   private authStates: Map<string, AuthState> = new Map();
   private config: { apiId: number; apiHash: string };
+  private readonly dataDir = path.join(process.cwd(), 'data');
+  private readonly authStatesFile = path.join(process.cwd(), 'data', 'auth-states.json');
+  private readonly sessionsFile = path.join(process.cwd(), 'data', 'sessions.json');
 
   constructor() {
+    this.ensureDataDir();
+
     // Загружаем конфигурацию после того как ConfigModule загрузил .env
     // Не валидируем при создании - только при использовании
     try {
       this.config = getTelegramConfig();
-    } catch (error) {
+    } catch (error: any) {
       console.warn('[TelegramService] Config not loaded, will fail on first use:', error.message);
       this.config = { apiId: 0, apiHash: '' };
     }
@@ -45,6 +52,7 @@ export class TelegramService {
           if (now - state.createdAt > AUTH_STATE_TTL) {
             state.client.disconnect().catch(() => {});
             this.authStates.delete(phone);
+            this.deleteAuthState(phone);
             console.log(`[TelegramService] Cleaned up expired authState for ${phone}`);
           }
         }
@@ -90,6 +98,7 @@ export class TelegramService {
         if (existingState) {
           existingState.client.disconnect().catch(() => {});
           this.authStates.delete(phoneNumber);
+          this.deleteAuthState(phoneNumber);
           console.log(`[authenticate] Cleaned up previous authState for ${phoneNumber}`);
         }
 
@@ -111,6 +120,7 @@ export class TelegramService {
             apiHash: this.config.apiHash,
           },
           phoneNumber,
+          true,
         );
         const sendCodeTimeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Send code timeout')), 30000),
@@ -119,12 +129,14 @@ export class TelegramService {
         const result = (await Promise.race([sendCodePromise, sendCodeTimeoutPromise])) as any;
 
         // Сохраняем состояние для следующего запроса
+        const createdAt = Date.now();
         this.authStates.set(phoneNumber, {
           client: client!,
           phoneCodeHash: result.phoneCodeHash,
           phoneNumber,
-          createdAt: Date.now(),
+          createdAt,
         });
+        this.saveAuthState(phoneNumber, result.phoneCodeHash, createdAt);
 
         return {
           needsCode: true,
@@ -133,7 +145,23 @@ export class TelegramService {
       }
 
       // Шаг 2: Проверка кода
-      const authState = this.authStates.get(phoneNumber);
+      let authState = this.authStates.get(phoneNumber);
+      if (!authState) {
+        const persisted = this.loadAuthStates();
+        const saved = persisted.get(phoneNumber);
+        if (saved) {
+          const restoredClient = this.createClient();
+          await restoredClient.connect();
+          authState = {
+            client: restoredClient,
+            phoneCodeHash: saved.phoneCodeHash,
+            phoneNumber,
+            createdAt: saved.createdAt,
+          };
+          this.authStates.set(phoneNumber, authState);
+          console.log(`[authenticate] Restored authState from file for ${phoneNumber}`);
+        }
+      }
       if (!authState) {
         throw new Error('Please request code first by sending phoneNumber without code');
       }
@@ -159,6 +187,8 @@ export class TelegramService {
         // Сохраняем клиента под session string
         this.clients.set(sessionString, authState.client);
         this.authStates.delete(phoneNumber);
+        this.saveSession(sessionString);
+        this.deleteAuthState(phoneNumber);
 
         console.log(`[authenticate] Instance #${this.instanceId}: ✅ Client saved successfully`);
         console.log('[authenticate] Session string length:', sessionString.length);
@@ -172,7 +202,7 @@ export class TelegramService {
           sessionString,
           message: 'Successfully authenticated',
         };
-      } catch (error) {
+      } catch (error: any) {
         // Нужен 2FA пароль
         if (error.message.includes('SESSION_PASSWORD_NEEDED')) {
           if (!password) {
@@ -210,6 +240,8 @@ export class TelegramService {
           // Сохраняем клиента под session string
           this.clients.set(sessionString, authState.client);
           this.authStates.delete(phoneNumber);
+          this.saveSession(sessionString);
+          this.deleteAuthState(phoneNumber);
 
           console.log(
             `[authenticate] Instance #${this.instanceId}: ✅ Client saved successfully (2FA)`,
@@ -229,7 +261,7 @@ export class TelegramService {
           throw error;
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Authentication error:', error);
 
       // Очистка состояния при ошибке
@@ -237,17 +269,18 @@ export class TelegramService {
       if (authState) {
         try {
           await authState.client.disconnect().catch(() => {});
-        } catch (e) {
+        } catch (e: any) {
           // Игнорируем ошибки при отключении
         }
         this.authStates.delete(phoneNumber);
+        this.deleteAuthState(phoneNumber);
       }
 
       // Очистка клиента, если он был создан, но не сохранен
       if (client && !this.clients.has((client.session as StringSession).save())) {
         try {
           await client.disconnect().catch(() => {});
-        } catch (e) {
+        } catch (e: any) {
           // Игнорируем ошибки при отключении
         }
       }
@@ -261,44 +294,26 @@ export class TelegramService {
    * Получает клиента из кэша
    * ВАЖНО: Клиент должен быть создан через authenticate() перед использованием
    */
-  private getClient(sessionString: string): TelegramClient {
+  private async getClient(sessionString: string): Promise<TelegramClient> {
     // Очищаем от пробелов/переносов
     const cleanSession = sessionString.trim();
 
     console.log(`[getClient] Instance #${this.instanceId}: Looking for cached client...`);
     console.log('[getClient] Total cached clients:', this.clients.size);
-    console.log(
-      '[getClient] Clients Map keys:',
-      Array.from(this.clients.keys()).map((k) => k.substring(0, 20)),
-    );
-
-    // Показываем сохраненные сессии
-    if (this.clients.size > 0) {
-      console.log('[getClient] Full comparison:');
-      for (const key of this.clients.keys()) {
-        const match = key === cleanSession;
-        console.log(`  Cached (full): "${key}"`);
-        console.log(`  Looking (full): "${cleanSession}"`);
-        console.log(`  Match: ${match}`);
-
-        // Если не совпадает - найдем где именно
-        if (!match && key.length === cleanSession.length) {
-          for (let i = 0; i < key.length; i++) {
-            if (key[i] !== cleanSession[i]) {
-              console.log(`  First diff at position ${i}:`);
-              console.log(`    Cached char: '${key[i]}' (code: ${key.charCodeAt(i)})`);
-              console.log(
-                `    Looking char: '${cleanSession[i]}' (code: ${cleanSession.charCodeAt(i)})`,
-              );
-              break;
-            }
-          }
-        }
-      }
-    }
 
     if (!this.clients.has(cleanSession)) {
-      console.error('[getClient] ❌ Client not found in cache!');
+      // Попытка восстановить клиента из файла
+      const persisted = this.loadSessions();
+      if (persisted.has(cleanSession)) {
+        console.log('[getClient] Session found in file, restoring client...');
+        const restoredClient = this.createClient(cleanSession);
+        await restoredClient.connect();
+        this.clients.set(cleanSession, restoredClient);
+        console.log('[getClient] ✅ Client restored from file');
+        return restoredClient;
+      }
+
+      console.error('[getClient] ❌ Client not found in cache or file!');
       throw new BadRequestException(
         'Session not found. Please authenticate first using POST /telegram/auth',
       );
@@ -322,7 +337,7 @@ export class TelegramService {
 
     try {
       console.log('[getChannelPosts] Getting client from session...');
-      const client = this.getClient(sessionString);
+      const client = await this.getClient(sessionString);
       console.log('[getChannelPosts] Client obtained successfully');
 
       // Убеждаемся, что клиент подключен
@@ -382,7 +397,7 @@ export class TelegramService {
         posts,
         count: posts.length,
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error('[getChannelPosts] Error:', error);
       console.error('[getChannelPosts] Error message:', error.message);
       console.error('[getChannelPosts] Error stack:', error.stack);
@@ -457,6 +472,74 @@ export class TelegramService {
     if (client) {
       await client.disconnect();
       this.clients.delete(sessionString);
+    }
+    this.deleteSession(sessionString);
+  }
+
+  private ensureDataDir(): void {
+    try {
+      fs.mkdirSync(this.dataDir, { recursive: true });
+    } catch (error: any) {
+      console.error('[TelegramService] Failed to create data directory:', error.message);
+    }
+  }
+
+  private loadAuthStates(): Map<string, { phoneCodeHash: string; createdAt: number }> {
+    try {
+      if (!fs.existsSync(this.authStatesFile)) return new Map();
+      const parsed = JSON.parse(fs.readFileSync(this.authStatesFile, 'utf-8'));
+      return new Map(Object.entries(parsed));
+    } catch {
+      return new Map();
+    }
+  }
+
+  private saveAuthState(phoneNumber: string, phoneCodeHash: string, createdAt: number): void {
+    try {
+      const existing = this.loadAuthStates();
+      existing.set(phoneNumber, { phoneCodeHash, createdAt });
+      fs.writeFileSync(this.authStatesFile, JSON.stringify(Object.fromEntries(existing), null, 2));
+    } catch (error: any) {
+      console.error('[TelegramService] Failed to save auth state:', error.message);
+    }
+  }
+
+  private deleteAuthState(phoneNumber: string): void {
+    try {
+      const existing = this.loadAuthStates();
+      existing.delete(phoneNumber);
+      fs.writeFileSync(this.authStatesFile, JSON.stringify(Object.fromEntries(existing), null, 2));
+    } catch (error: any) {
+      console.error('[TelegramService] Failed to delete auth state:', error.message);
+    }
+  }
+
+  private loadSessions(): Set<string> {
+    try {
+      if (!fs.existsSync(this.sessionsFile)) return new Set();
+      return new Set(JSON.parse(fs.readFileSync(this.sessionsFile, 'utf-8')) as string[]);
+    } catch {
+      return new Set();
+    }
+  }
+
+  private saveSession(sessionString: string): void {
+    try {
+      const existing = this.loadSessions();
+      existing.add(sessionString);
+      fs.writeFileSync(this.sessionsFile, JSON.stringify(Array.from(existing), null, 2));
+    } catch (error: any) {
+      console.error('[TelegramService] Failed to save session:', error.message);
+    }
+  }
+
+  private deleteSession(sessionString: string): void {
+    try {
+      const existing = this.loadSessions();
+      existing.delete(sessionString);
+      fs.writeFileSync(this.sessionsFile, JSON.stringify(Array.from(existing), null, 2));
+    } catch (error: any) {
+      console.error('[TelegramService] Failed to delete session:', error.message);
     }
   }
 }
