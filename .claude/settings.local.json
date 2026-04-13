@@ -1,8 +1,46 @@
 {
   "permissions": {
     "allow": [
+      "Bash(npm run lint)",
+      "Bash(npm run lint:*)",
+      "Bash(npm run format)",
+      "Bash(npm run build)",
+      "Bash(npm run start:*)",
+      "Bash(npm install)",
+      "Bash(npm ci)",
+      "Bash(node *)",
+      "Bash(npx *)",
       "Bash(ls -la /c/Projects/tg-parser/.env*)",
-      "Bash(wc -l /c/Projects/tg-parser/src/**/*.ts)"
+      "Bash(wc -l /c/Projects/tg-parser/src/**/*.ts)",
+      "Bash(rtk grep:*)"
+    ],
+    "deny": [],
+    "ask": [
+      "Bash(npm uninstall *)",
+      "Bash(npm publish *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[hook] Files changed - run /post-code before committing'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[hook] Session ending - ensure post-code checks pass before pushing'"
+          }
+        ]
+      }
     ]
   }
 }
