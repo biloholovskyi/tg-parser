@@ -120,7 +120,6 @@ export class TelegramService {
             apiHash: this.config.apiHash,
           },
           phoneNumber,
-          true,
         );
         const sendCodeTimeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Send code timeout')), 30000),
