@@ -1,47 +1,145 @@
-# CLAUDE.md
+# tg-parser
 
-@.claude/CLAUDE.md
+NestJS 10 service that wraps GramJS (a Telegram MTProto client) to parse public and private Telegram channels through a personal user account, not a bot. REST API, TypeScript 5 on Node 20+. No database.
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Session model, stated accurately: the intended model is process memory only. The current code additionally writes session strings and phone numbers to JSON files under `data/`, against the rules, on a deployment filesystem that is wiped on every deploy. This is an open decision, recorded under Known Deviations in @.claude/rules/telegram.md. Do not extend the file-backed store, and do not rewrite a rule to match it.
 
-## Commands
+## Source of Truth
 
-```bash
-# Development
-npm run start:dev       # Hot-reload dev server
-npm run start:debug     # Debug mode with watch
+AI rules live under `.claude/rules/`. Claude-native configuration lives under `.claude/` (rules, agents, skills, agent-memory, settings) and is canonical — hand-edited, not generated. There is no separate `ai/` folder.
 
-# Build & Production
-npm run build           # Compile TypeScript → dist/
-npm run start:prod      # Run compiled output
+- Start here: @.claude/rules/index.md (compiled task-map index)
+- Always load: @.claude/rules/core-rules.md + @.claude/rules/response-rules.md
+- Token discipline: @.claude/rules/token-economy.md
+- Tooling / shell: @.claude/rules/tooling.md
+- Testing is mandatory: @.claude/rules/testing.md
 
-# Code Quality
-npm run lint            # ESLint with auto-fix
-npm run format          # Prettier formatting
-```
+## Rule Precedence
 
-No test runner is configured in this project.
+User instruction in the current turn > project hard rules (`CLAUDE.md`, `.claude/rules/*.md`) > project skills (`.claude/skills/`) > plugin and global skills (`superpowers:*`, `~/.claude/CLAUDE.md`) > model defaults.
+
+Plugin skills never override a project hard rule. Planning, committing, and testing conflicts are already resolved in @.claude/rules/core-rules.md (Rule Precedence) — follow that table instead of re-deciding.
+
+## Hard Rules
+
+- No automatic commits: never run `git commit` on your own — commit ONLY on an explicit user request. This applies to dispatched subagents too. See @.claude/rules/git-conventions.md.
+- Every feature and bugfix ships with tests in the same change. See @.claude/rules/testing.md.
+- Secrets never reach a log, a test fixture, a report, or a memory file: no `sessionString`, `TELEGRAM_API_HASH`, phone number, SMS code, or 2FA password. See @.claude/rules/telegram.md.
+- GramJS stays inside `src/telegram/`. No other module imports the `telegram` package or constructs a `TelegramClient`.
+- The REST surface is privileged: every endpoint except the health probe requires caller authentication and a rate limit, and no credential ever travels in a URL. See @.claude/rules/api-security.md.
+- Every resource opened at runtime has a ceiling and a release path: bounded caches, eviction that disconnects, cleared timers, explicit GramJS options, no synchronous filesystem access on a request path. A leaked connection is a recurring bill. See @.claude/rules/runtime-resources.md.
+- Anything touching auth, sessions, secrets, or the REST perimeter carries a `risks.md` with a rollback move before implementation starts. See @.claude/rules/implementation-plans.md.
+- No magic numbers: extract constants for numeric literals >1 (0, 1, -1 OK inline).
+- No auto-documentation: only when explicitly requested.
+- Communication style is a hard rule, not a preference: reply to the user in Russian always, with brief final answers, plain language, and every non-trivial technical term explained on its first use in a session. See @.claude/rules/response-rules.md.
 
 ## Architecture
 
-NestJS service that wraps GramJS (Telegram MTProto client) to parse public and private Telegram channels via a personal user account (not a bot).
-
-**Request flow:**
 ```
 TelegramController (REST) → TelegramService (GramJS logic) → Telegram MTProto API
 ```
 
-**Two core endpoints:**
-1. `POST /telegram/auth` — Multi-step auth (phone → SMS code → optional 2FA password). Returns a `sessionString`.
-2. `GET /telegram/channel/:username/posts` — Fetch time-filtered posts using a `sessionString`.
+- `GET /telegram/health` — liveness probe and the Railway health check target
+- `POST /telegram/auth` — multi-step auth: phone, SMS code, optional 2FA password; returns a `sessionString`
+- `GET /telegram/me` — session validity and account info
+- `GET /telegram/channel/:channelUsername/posts` — time-filtered posts, authorized by a `sessionString`
 
-**Session model:** `TelegramClient` instances are cached in-memory in a `Map<sessionString, TelegramClient>`. Sessions are lost on process restart — there is no database or persistence layer.
+Session model: `TelegramClient` instances are cached in an in-memory `Map<sessionString, TelegramClient>`. Everything is lost on process restart, and the cache is per-process, so horizontal scaling breaks session affinity. The cache is bounded and idle clients are evicted and disconnected, because every connected client pings Telegram continuously. Details: @.claude/rules/architecture.md and @.claude/rules/runtime-resources.md.
 
-**Key source files:**
-- [src/telegram/telegram.service.ts](src/telegram/telegram.service.ts) — Core GramJS logic (~530 LOC): authentication flow, client caching, message iteration and filtering
+Key source files:
+
+- [src/telegram/telegram.service.ts](src/telegram/telegram.service.ts) — GramJS logic: auth flow, client caching, message iteration and filtering
 - [src/telegram/telegram.controller.ts](src/telegram/telegram.controller.ts) — REST endpoints and request validation
-- [src/config/telegram.config.ts](src/config/telegram.config.ts) — Loads `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` from env
+- [src/config/telegram.config.ts](src/config/telegram.config.ts) — loads `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`
+- [src/config/cors.config.ts](src/config/cors.config.ts) — loads the `CORS_ALLOWED_ORIGINS` allowlist
+- [src/shared/utils/http-pipeline.ts](src/shared/utils/http-pipeline.ts) — body-size limit, global `ValidationPipe`, CORS options; called from `src/main.ts`
+- [src/shared/utils/process-handlers.ts](src/shared/utils/process-handlers.ts) — process handlers and the single deliberate shutdown path
 - [src/telegram/interfaces/message.interface.ts](src/telegram/interfaces/message.interface.ts) — `TelegramPost` and `TelegramMedia` types
+
+## Quick Commands
+
+Always prefix with `rtk`. This project uses npm, never pnpm or yarn.
+
+- `rtk npm run start:dev` — dev server with watch mode
+- `rtk npm run build` — compile TypeScript to `dist/`
+- `rtk npm run lint` — ESLint with auto-fix
+- `rtk npm run typecheck` — type-only check
+- `rtk npm test` — Jest unit tests
+- `rtk npm run test:e2e` — E2E suite
+
+## Load Rules by Task
+
+| Task | Load |
+|------|------|
+| Adding or changing a feature module | `.claude/rules/architecture.md` |
+| Telegram, GramJS, sessions, MTProto errors | `.claude/rules/telegram.md` |
+| Applying project code patterns | `.claude/rules/patterns.md` |
+| TypeScript types, strictness, decorators | `.claude/rules/typescript.md` |
+| REST endpoint, DTO, or response contract | `.claude/rules/api-contracts.md` |
+| Endpoint auth, rate limits, CORS, credential transport | `.claude/rules/api-security.md` |
+| Caches, connections, timers, cost, runtime environment | `.claude/rules/runtime-resources.md` |
+| Writing or changing tests | `.claude/rules/testing.md` |
+| Auditing test coverage | `.claude/rules/test-coverage-audit.md` |
+| Finishing a code change (QA pass) | `.claude/rules/post-code-workflow.md` |
+| Running a project command | `.claude/rules/tooling.md` |
+| Writing an implementation plan | `.claude/rules/implementation-plans.md` |
+| Executing an implementation plan | `.claude/rules/plan-execution.md` |
+| Auditing an implementation plan | `.claude/rules/plan-audit.md` |
+| Plan completion report | `.claude/rules/report-generation.md` |
+| Committing | `.claude/rules/git-conventions.md` |
+| Commit metadata and crosslinks | `.claude/rules/commit-message-and-crosslinks.md` |
+| Version bump or changelog entry | `.claude/rules/versioning-changelog.md` |
+| Refactor or security review | `.claude/rules/refactor-security-audit.md` |
+| Checking that rules and docs still match the code | `.claude/rules/drift-audit.md` |
+| Answering the user | `.claude/rules/response-rules.md` |
+| Managing the context budget | `.claude/rules/token-economy.md` |
+| Entry point, always loaded | `.claude/rules/core-rules.md` |
+
+`.claude/rules/*.md` carry a `paths:` frontmatter so Claude can auto-load them when an edit touches matching paths.
+
+## Skills
+
+Invoke via `/skill-name`:
+
+- `/post-code` — full QA pass: lint, build, test
+- `/commit` — conventional commit with version and changelog gates
+- `/lint`, `/test`, `/build`, `/typecheck` — individual QA steps
+- `/start-task` — classify a task and initialize a plan when needed
+- `/implement-plan-step` — execute one plan phase with gates
+- `/write-tests` — author tests via the `test-writer` agent
+- `/audit-plan`, `/audit-security` — audits
+- `/audit-resources` — leak, resource and cost audit
+- `/audit-drift` — rules and docs versus code
+- `/debug` — systematic root-cause investigation with a mandatory regression test
+- `/plan-report` — plan completion report and reports index
+
+Skill definitions: `.claude/skills/<name>/SKILL.md`.
+
+## Agents
+
+Specialized agent definitions under `.claude/agents/`:
+
+- `tg-parser-backend-expert` — primary implementer: REST features, GramJS work, refactors
+- `test-writer` — authors Jest unit and Supertest E2E tests
+- `code-reviewer` — review of recently written or uncommitted code
+- `codebase-researcher` — read-only codebase discovery
+- `command-runner` — runs lint/build/test off the main thread
+- `dependency-analyst` — dependency and version-alignment analysis
+- `plan-auditor` — read-only implementation-plan audit
+- `test-coverage-auditor` — Jest coverage gaps
+- `parallel-tester` — parallel Jest runs
+- `full-package-auditor` — dependencies, quality, security, coverage in one report
+- `security-auditor` — perimeter, secret hygiene and credential transport
+- `resource-leak-auditor` — connections, caches, timers, synchronous I/O, runtime cost
+- `docs-drift-auditor` — rules and `CLAUDE.md` versus the code
+- `debugger` — systematic root-cause investigation
+- `report-writer` — plan-completion report author
+
+Agent memory lives at `.claude/agent-memory/<agent>/MEMORY.md`.
+
+## Deployment
+
+Railway via [railway.toml](railway.toml): RAILPACK builder, `npm run start:prod`, health check at `/telegram/health`, port 8080. Deployment is intentionally not governed by a Claude rule file or an MCP server in this project — deploy changes are made by hand.
 
 ## Environment Variables
 
@@ -49,8 +147,15 @@ TelegramController (REST) → TelegramService (GramJS logic) → Telegram MTProt
 |----------|-------------|
 | `TELEGRAM_API_ID` | Numeric API ID from my.telegram.org |
 | `TELEGRAM_API_HASH` | 32-char API hash from my.telegram.org |
-| `PORT` | HTTP port (default 3000; Railway overrides to 8080) |
+| `PORT` | HTTP port (default 8080, matching `internal_port` in `railway.toml`) |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated browser origin allowlist for CORS; empty or unset means no browser origin is allowed, and `*` is ignored |
 
-## Deployment
+Credentials are read only through `src/config/telegram.config.ts`. Boot does not fail when they are missing — the health endpoint stays up and the failure surfaces on first real use.
 
-Configured for Railway via [railway.toml](railway.toml) (RAILPACK builder, `npm run start:prod`, health check at `/telegram/health`).
+## Guards
+
+`.claude/hooks/guard-secrets.js` runs as a `PreToolUse` hook from `.claude/settings.json`. It blocks writing into `data/`, editing `.env`, and writing any session string, API hash, or phone number into a repository file. A blocked call is not a suggestion to work around it.
+
+## MCP
+
+`.mcp.json` declares `context7` (library documentation lookups, useful for GramJS and NestJS APIs).

@@ -18,4 +18,3 @@ export function getTelegramConfig(): TelegramConfig {
 
   return { apiId, apiHash };
 }
-

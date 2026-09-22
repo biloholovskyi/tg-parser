@@ -124,7 +124,7 @@ railway variables
 
 ### Port уже используется
 
-Railway автоматически устанавливает переменную `PORT`. Код уже использует `process.env.PORT || 3000`.
+Railway автоматически устанавливает переменную `PORT`. Код использует `process.env.PORT`, а без неё — `DEFAULT_PORT` = 8080 (`src/shared/constants/http.constants.ts`), что совпадает с `internal_port` в `railway.toml`.
 
 ## Полезные команды
 

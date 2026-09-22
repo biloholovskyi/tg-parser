@@ -1,46 +1,37 @@
 {
   "permissions": {
     "allow": [
+      "Bash(rtk npm run:*)",
+      "Bash(rtk npm test:*)",
+      "Bash(rtk npm ls:*)",
+      "Bash(rtk npm audit)",
+      "Bash(rtk npm outdated)",
+      "Bash(rtk git diff:*)",
+      "Bash(rtk read:*)",
+      "Bash(rtk grep:*)",
+      "Bash(rtk ls:*)",
+      "Bash(rtk rg:*)",
+      "Bash(rtk err:*)",
       "Bash(npm run lint)",
       "Bash(npm run lint:*)",
       "Bash(npm run format)",
       "Bash(npm run build)",
-      "Bash(npm run start:*)",
-      "Bash(npm install)",
-      "Bash(npm ci)",
-      "Bash(node *)",
-      "Bash(npx *)",
-      "Bash(ls -la /c/Projects/tg-parser/.env*)",
-      "Bash(wc -l /c/Projects/tg-parser/src/**/*.ts)",
-      "Bash(rtk grep:*)"
+      "Bash(npm run typecheck)",
+      "Bash(npm test:*)",
+      "Bash(npx jest:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npx tsc:*)",
+      "PowerShell(rtk npm *)",
+      "mcp__context7"
     ],
     "deny": [],
     "ask": [
+      "Bash(npm install *)",
       "Bash(npm uninstall *)",
-      "Bash(npm publish *)"
+      "Bash(npm publish *)",
+      "Bash(npm run start:*)",
+      "Bash(node *)"
     ]
   },
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo '[hook] Files changed - run /post-code before committing'"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo '[hook] Session ending - ensure post-code checks pass before pushing'"
-          }
-        ]
-      }
-    ]
-  }
+  "enabledMcpjsonServers": ["context7"]
 }

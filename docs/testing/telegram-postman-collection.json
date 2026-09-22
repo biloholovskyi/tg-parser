@@ -1,0 +1,604 @@
+{
+  "info": {
+    "name": "tg-parser - telegram",
+    "description": "REST-поверхность tg-parser после блока 01: health, валидация тела, ограничение размера тела, список источников CORS, авторизация и посты канала. sessionString и номер телефона хранятся только в переменных коллекции и никогда не коммитятся.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8080"
+    },
+    {
+      "key": "allowedOrigin",
+      "value": "https://allowed.example.com"
+    },
+    {
+      "key": "foreignOrigin",
+      "value": "https://foreign.example.com"
+    },
+    {
+      "key": "phoneNumber",
+      "value": ""
+    },
+    {
+      "key": "phoneCode",
+      "value": ""
+    },
+    {
+      "key": "password",
+      "value": ""
+    },
+    {
+      "key": "sessionString",
+      "value": ""
+    },
+    {
+      "key": "channelUsername",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "health",
+      "item": [
+        {
+          "name": "H1 health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "health"
+              ]
+            },
+            "description": "200 и ровно {\"status\":\"ok\"}."
+          },
+          "response": []
+        },
+        {
+          "name": "H3 root is gone",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                ""
+              ]
+            },
+            "description": "404: дублирующий health удалён."
+          },
+          "response": []
+        },
+        {
+          "name": "H4 bare health is gone",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "404: дублирующий health удалён."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "auth",
+      "description": "Многошаговая авторизация. Шаги A1-A3 расходуют лимиты Telegram и шлют SMS.",
+      "item": [
+        {
+          "name": "A1 request code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "Ответ: needsCode: true.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "A2 submit code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "Ответ: sessionString либо needsPassword: true.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\",\n  \"phoneCode\": \"{{phoneCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Keeps the credential in a collection variable, never in the committed file.",
+                  "const body = pm.response.json();",
+                  "if (body.sessionString) {",
+                  "  pm.collectionVariables.set('sessionString', body.sessionString);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A3 submit 2fa password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "Только при включённой двухфакторной защите.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\",\n  \"phoneCode\": \"{{phoneCode}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "A4 check session",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/me?sessionString={{sessionString}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "me"
+              ],
+              "query": [
+                {
+                  "key": "sessionString",
+                  "value": "{{sessionString}}"
+                }
+              ]
+            },
+            "description": "200 и status: success. Транспорт через query временный, исправляется в блоке 02."
+          },
+          "response": []
+        },
+        {
+          "name": "A5 check session without credential",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "me"
+              ]
+            },
+            "description": "200 и status: failed."
+          },
+          "response": []
+        },
+        {
+          "name": "A6 channel posts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts?sessionString={{sessionString}}&hoursBack=24",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "channel",
+                "{{channelUsername}}",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "sessionString",
+                  "value": "{{sessionString}}"
+                },
+                {
+                  "key": "hoursBack",
+                  "value": "24"
+                }
+              ]
+            },
+            "description": "Посты за период, 1..720 часов."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "validation",
+      "item": [
+        {
+          "name": "V1 unknown field",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "400. Номер намеренно невалиден, запрос не доходит до Telegram.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"not-a-phone\",\n  \"unexpectedField\": \"x\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "V2 empty body",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "400: phoneNumber обязателен.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "V3 malformed phone",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "400: формат E.164.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"not-a-phone\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "V4 non-digit code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "400: код только из цифр.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"not-a-phone\",\n  \"phoneCode\": \"abcd\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "V5 oversized body",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "413: тело больше 16 КБ отклоняется до контроллера.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"{{oversizedPhoneNumber}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Builds a body above REQUEST_BODY_MAX_BYTES (16 KiB) without storing it in the collection.",
+                  "pm.variables.set('oversizedPhoneNumber', 'x'.repeat(20000));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "V6 hoursBack out of range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts?sessionString={{sessionString}}&hoursBack=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "channel",
+                "{{channelUsername}}",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "sessionString",
+                  "value": "{{sessionString}}"
+                },
+                {
+                  "key": "hoursBack",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "400: допустимо 1..720."
+          },
+          "response": []
+        },
+        {
+          "name": "V7 posts without credential",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "channel",
+                "{{channelUsername}}",
+                "posts"
+              ]
+            },
+            "description": "400: sessionString обязателен."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "cors",
+      "item": [
+        {
+          "name": "C1 allowed origin",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "{{allowedOrigin}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "health"
+              ]
+            },
+            "description": "Access-Control-Allow-Origin равен allowedOrigin; переменная должна входить в CORS_ALLOWED_ORIGINS."
+          },
+          "response": []
+        },
+        {
+          "name": "C2 foreign origin",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "{{foreignOrigin}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "health"
+              ]
+            },
+            "description": "Ответ без заголовка Access-Control-Allow-Origin."
+          },
+          "response": []
+        },
+        {
+          "name": "C3 no origin",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "health"
+              ]
+            },
+            "description": "Серверный вызов проходит."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

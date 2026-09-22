@@ -16,6 +16,6 @@
     "**/.DS_Store": true,
     "**/node_modules": true,
     "**/dist": true
-  }
+  },
+  "js/ts.tsdk.path": "node_modules/typescript/lib"
 }
-

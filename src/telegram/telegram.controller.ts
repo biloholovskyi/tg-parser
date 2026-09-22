@@ -17,10 +17,15 @@ import { TelegramService } from './telegram.service';
 export class TelegramController {
   constructor(private readonly telegramService: TelegramService) {}
 
+  /**
+   * GET /telegram/health
+   * The only health probe: constant payload, no Telegram and no credential access.
+   * Matches healthcheck_path in railway.toml.
+   */
   @Get('health')
   @HttpCode(HttpStatus.OK)
-  health() {
-    return { status: 'ok', timestamp: new Date().toISOString() };
+  health(): { status: 'ok' } {
+    return { status: 'ok' };
   }
 
   /**
