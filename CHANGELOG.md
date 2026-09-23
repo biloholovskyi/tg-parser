@@ -1,5 +1,6 @@
 [1.4.1] 23.09.2026
 
+- Test coverage: TelegramService, TelegramController and request DTOs fully unit tested; E2E covers the full auth cycle and proves no real Telegram client is created
 - Service logs go through the NestJS Logger only: one outcome line per request, no phone numbers or session strings, console banned by ESLint in src
 - Channel posts are walked page by page up to POSTS_MAX_MESSAGES and the response reports isTruncated; Telegram failures map to 401, 404, 400, 429, 502, 503
 - Telegram client cache bounded by SESSION_CACHE_MAX_ENTRIES with idle eviction; evicted and shut-down clients are destroyed, GramJS options set explicitly

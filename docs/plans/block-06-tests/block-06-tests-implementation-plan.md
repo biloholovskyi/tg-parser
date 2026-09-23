@@ -15,7 +15,7 @@
 
 ## Целевая версия
 
-Уточняется пользователем перед стартом работ.
+1.4.1
 
 ## Высокорисковая поверхность
 
@@ -23,10 +23,10 @@
 
 ## Фазы
 
-- Phase 01 (todo) — юнит-тесты сервиса: [phase-01-service-unit.md](phase-01-service-unit.md)
-- Phase 02 (todo) — контроллер и DTO: [phase-02-controller-dto.md](phase-02-controller-dto.md)
-- Phase 03 (todo) — E2E: [phase-03-e2e.md](phase-03-e2e.md)
-- Phase 04 (todo) — Finalize: [phase-04-finalize.md](phase-04-finalize.md)
+- Phase 01 (done) — юнит-тесты сервиса: [phase-01-service-unit.md](phase-01-service-unit.md)
+- Phase 02 (done) — контроллер и DTO: [phase-02-controller-dto.md](phase-02-controller-dto.md)
+- Phase 03 (done) — E2E: [phase-03-e2e.md](phase-03-e2e.md)
+- Phase 04 (done) — Finalize: [phase-04-finalize.md](phase-04-finalize.md)
 
 ## Покрытие правил
 
@@ -42,6 +42,6 @@
 
 ## Следующие действия
 
-1. Проставить целевую версию.
+1. Целевая версия проставлена: 1.4.1.
 2. Прогнать агент `test-coverage-auditor` и зафиксировать список пробелов как вход для Phase 01.
 3. Запустить Phase 01.

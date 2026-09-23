@@ -139,6 +139,14 @@ describe('CompleteAuthDto', () => {
     expect(expectedError.constraints).toHaveProperty('maxLength');
   });
 
+  it('StartAuthDto accepts a valid phone number on its own', async () => {
+    const inputPlain = { phoneNumber: INPUT_FAKE_PHONE_NUMBER };
+
+    const actualErrors = await validate(plainToInstance(StartAuthDto, inputPlain));
+
+    expect(actualErrors).toHaveLength(0);
+  });
+
   it('inherits phoneNumber validation from StartAuthDto', async () => {
     const inputPlain = { phoneNumber: 'not-a-phone-number' };
 

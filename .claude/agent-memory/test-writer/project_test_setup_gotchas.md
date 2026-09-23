@@ -80,6 +80,16 @@ Setup facts that cost a debug cycle each when writing specs here.
     (`existsSync`/`readFileSync`/`writeFileSync` implementations) in a nested `beforeEach`, and restore the
     default implementations in `afterEach` — `jest.restoreAllMocks()` does not reset `jest.fn` implementations.
 
+14. A controller unit spec should `jest.mock('./telegram.service', () => ({ TelegramService: class {} }))`
+    so the DI token exists without loading GramJS, then provide `{ provide: TelegramService, useValue: mock }`.
+    Route metadata (`IS_PUBLIC_ROUTE_KEY`, `IS_PHONE_RATE_LIMITED_KEY`) is read with a plain `new Reflector()`.
+
+15. The `PhoneRateLimitGuard` store lives on the guard instance, so it is shared by every `it` in one
+    E2E spec file (one app per file) and counts digits only. Give each multi-step auth test its own fake
+    number (`+100000000NN`) instead of reusing one; the limit is RATE_LIMIT_AUTH_MAX_REQUESTS per hour.
+    For a no-network proof, `jest.mock('telegram', () => ({ ...jest.requireActual('telegram'), TelegramClient: jest.fn() }))`
+    works in an E2E spec and also assert `jest.isMockFunction` so a no-op mock cannot pass silently.
+
 **Why:** all of these produce failures that look like production bugs (env "not absent", a type error
 on a correct-looking call, a test that passes alone and fails in a suite) rather than test-harness
 problems.

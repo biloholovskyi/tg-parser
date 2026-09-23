@@ -175,6 +175,40 @@ describe('channel posts route (e2e)', () => {
   });
 
   describe('response contract', () => {
+    it('returns populated posts, count and isTruncated exactly as the service produced them', async () => {
+      // Arrange
+      const inputPostDate = new Date('2026-01-01T00:00:00.000Z');
+      const inputServiceResponse = {
+        posts: [
+          {
+            id: 1,
+            text: 'fake post text',
+            date: inputPostDate,
+            media: [{ type: 'photo' }],
+            postUrl: `https://t.me/${INPUT_FAKE_CHANNEL}/1`,
+          },
+        ],
+        count: 1,
+        isTruncated: false,
+      };
+      mockTelegramService.getChannelPosts.mockResolvedValue(inputServiceResponse);
+      const expectedBody = {
+        ...inputServiceResponse,
+        posts: [{ ...inputServiceResponse.posts[0], date: inputPostDate.toISOString() }],
+      };
+
+      // Act
+      const actualResponse = await request(app.getHttpServer())
+        .get(buildPostsRoute(INPUT_FAKE_CHANNEL))
+        .set(API_KEY_HEADER, INPUT_FAKE_API_KEY)
+        .set(SESSION_HEADER, INPUT_FAKE_SESSION_STRING);
+
+      // Assert
+      expect(actualResponse.status).toBe(HTTP_OK);
+      expect(actualResponse.body).toEqual(expectedBody);
+      expect(Object.keys(actualResponse.body).sort()).toEqual(['count', 'isTruncated', 'posts']);
+    });
+
     it('returns isTruncated from the service unchanged', async () => {
       // Arrange
       const expectedBody = { posts: [], count: 0, isTruncated: true };
