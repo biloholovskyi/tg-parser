@@ -40,6 +40,18 @@
     {
       "key": "channelUsername",
       "value": ""
+    },
+    {
+      "key": "busyChannelUsername",
+      "value": ""
+    },
+    {
+      "key": "fakeSessionString",
+      "value": "fake-session-string"
+    },
+    {
+      "key": "missingChannelUsername",
+      "value": "no_such_channel_zz9"
     }
   ],
   "item": [
@@ -867,6 +879,211 @@
               ]
             },
             "description": "Серверный вызов проходит."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "telegram errors",
+      "item": [
+        {
+          "name": "A7 truncated window",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/channel/{{busyChannelUsername}}/posts?hoursBack=720",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "channel",
+                "{{busyChannelUsername}}",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "hoursBack",
+                  "value": "720"
+                }
+              ]
+            },
+            "description": "200, число постов не больше POSTS_MAX_MESSAGES, isTruncated: true для канала с большим числом сообщений за окно."
+          },
+          "response": []
+        },
+        {
+          "name": "E1 check unknown session",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{fakeSessionString}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "me"
+              ]
+            },
+            "description": "200 и status: failed."
+          },
+          "response": []
+        },
+        {
+          "name": "E4 posts with unknown session",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{fakeSessionString}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts?hoursBack=24",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "channel",
+                "{{channelUsername}}",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "hoursBack",
+                  "value": "24"
+                }
+              ]
+            },
+            "description": "401, Session is invalid or revoked, authenticate again (как для отозванной сессии)."
+          },
+          "response": []
+        },
+        {
+          "name": "E6 missing channel",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/channel/{{missingChannelUsername}}/posts?hoursBack=24",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "channel",
+                "{{missingChannelUsername}}",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "hoursBack",
+                  "value": "24"
+                }
+              ]
+            },
+            "description": "404, Channel not found or not accessible to this account. Текста MTProto в теле нет."
+          },
+          "response": []
+        },
+        {
+          "name": "E8 wrong code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"phoneNumber\": \"{{phoneNumber}}\", \"phoneCode\": \"00000\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "После A1: 400, The phone code is invalid."
+          },
+          "response": []
+        },
+        {
+          "name": "E11 code without step 1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"phoneNumber\": \"+10000000000\", \"phoneCode\": \"12345\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "description": "400, Request a code first by sending phoneNumber without a code."
           },
           "response": []
         }

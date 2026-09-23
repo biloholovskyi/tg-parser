@@ -22,5 +22,13 @@ module.exports = {
     '@typescript-eslint/explicit-module-boundary-types': 'off',
     '@typescript-eslint/no-explicit-any': 'off',
   },
+  overrides: [
+    {
+      // Production output goes through the NestJS Logger only.
+      files: ['src/**/*.ts'],
+      excludedFiles: ['src/**/*.spec.ts'],
+      rules: { 'no-console': 'error' },
+    },
+  ],
 };
 

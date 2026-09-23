@@ -12,7 +12,7 @@ MTProto is Telegram's own wire protocol; GramJS speaks it as a user account (not
 ## Constants
 
 - API_CREDENTIAL_ENV = `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`
-- SESSION_CACHE = in-memory `Map<sessionString, TelegramClient>` owned by `TelegramService`
+- SESSION_CACHE = in-memory `SessionClientCache<TelegramClient>` keyed by `sessionString` (`src/telegram/utils/session-client-cache.ts`), owned by `TelegramService`
 - SESSION_PERSISTENCE = none (process memory only) — target model; see Known Deviations
 - AUTH_STEPS = phone number, SMS code, optional 2FA password
 - FLOOD_WAIT_ERROR = `FLOOD_WAIT_X` (seconds to wait carried in the error)
@@ -48,13 +48,18 @@ State the deviation, never silently rewrite the rule around it. Resolution proto
 
 | Telegram condition | HTTP response |
 |--------------------|---------------|
-| Missing or malformed `sessionString` | 400 `BadRequestException` |
+| Missing `sessionString` header on the posts route | 400 `BadRequestException` |
+| `sessionString` unknown to this process (not cached, not restorable) | 401 `UnauthorizedException` |
 | Session revoked, auth key invalid, not authorized | 401 `UnauthorizedException` |
 | Channel not found or not accessible to this account | 404 `NotFoundException` |
-| Phone code expired or invalid, 2FA password wrong | 400 `BadRequestException` with a distinguishable message |
+| Phone code or phone number invalid, 2FA password wrong | 400 `BadRequestException` with a distinguishable message |
 | `FLOOD_WAIT_X` | 429, surface the wait duration; never silently sleep for a long wait |
+| Transport failure (timeout, not connected, connection reset or refused) | 503 `ServiceUnavailableException` |
+| Any other Telegram failure | 502 `BadGatewayException` with a fixed message |
 | Missing `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | 500 with a configuration message, raised at use time, not at boot |
 
+- The mapping lives in `toHttpException` in `src/telegram/utils/telegram-errors.ts`; the error-code lists are in `src/telegram/constants.ts`.
+- `GET /telegram/me` answers 200 `failed` only when the session is missing, unknown or rejected; a transport failure or flood wait is thrown as its mapped status (503, 429), because it is not a verdict on the session.
 - Preserve the original error with `cause` when wrapping; do not swallow GramJS errors.
 - Never return a raw GramJS error object or stack to the client.
 

@@ -8,5 +8,6 @@
 
 | Дата | Компонент | Версия | Отчёт |
 |------|-----------|--------|-------|
+| 2026-09-23 | block-03-05-telegram-service | 1.4.1 | [block-03-05-telegram-service-1.4.1-2026-09-23.md](block-03-05-telegram-service-1.4.1-2026-09-23.md) |
 | 2026-09-23 | block-02-api-perimeter | 1.4.1 | [block-02-api-perimeter-1.4.1-2026-09-23.md](block-02-api-perimeter-1.4.1-2026-09-23.md) |
 | 2026-09-22 | block-01-bootstrap | 1.4.0 | [block-01-bootstrap-1.4.0-2026-09-22.md](block-01-bootstrap-1.4.0-2026-09-22.md) |

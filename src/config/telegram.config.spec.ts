@@ -1,11 +1,20 @@
+import { Logger } from '@nestjs/common';
 import { getTelegramConfig } from './telegram.config';
+
+const INPUT_API_ID = 12345;
+const INPUT_API_HASH = 'fake-api-hash';
 
 describe('getTelegramConfig', () => {
   const originalEnv = process.env;
+  let warnSpy: jest.SpyInstance;
+  let consoleSpies: jest.SpyInstance[];
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    consoleSpies = (['log', 'warn', 'error', 'info', 'debug'] as const).map((level) =>
+      jest.spyOn(console, level).mockImplementation(() => undefined),
+    );
   });
 
   afterEach(() => {
@@ -13,32 +22,93 @@ describe('getTelegramConfig', () => {
     jest.restoreAllMocks();
   });
 
-  it('reads the api id and hash from the environment', () => {
-    process.env.TELEGRAM_API_ID = '12345';
-    process.env.TELEGRAM_API_HASH = 'fake-api-hash';
+  function expectNoConsoleOutput(): void {
+    for (const spy of consoleSpies) {
+      expect(spy).not.toHaveBeenCalled();
+    }
+  }
 
-    const actual = getTelegramConfig();
+  it('parses the api id as a number and reads the hash, without warning', () => {
+    // Arrange
+    process.env.TELEGRAM_API_ID = String(INPUT_API_ID);
+    process.env.TELEGRAM_API_HASH = INPUT_API_HASH;
 
-    expect(actual).toEqual({ apiId: 12345, apiHash: 'fake-api-hash' });
+    // Act
+    const actualResult = getTelegramConfig();
+
+    // Assert
+    expect(actualResult).toEqual({ apiId: INPUT_API_ID, apiHash: INPUT_API_HASH });
+    expect(warnSpy).not.toHaveBeenCalled();
+    expectNoConsoleOutput();
   });
 
-  it('returns empty credentials and warns when the api id is missing', () => {
+  it('returns apiId 0 and warns once through the Logger when the api id is missing', () => {
+    // Arrange
     delete process.env.TELEGRAM_API_ID;
-    process.env.TELEGRAM_API_HASH = 'fake-api-hash';
+    process.env.TELEGRAM_API_HASH = INPUT_API_HASH;
 
-    const actual = getTelegramConfig();
+    // Act
+    const actualResult = getTelegramConfig();
 
-    expect(actual.apiId).toBe(0);
-    expect(console.warn).toHaveBeenCalled();
+    // Assert
+    expect(actualResult).toEqual({ apiId: 0, apiHash: INPUT_API_HASH });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('TELEGRAM_API_ID'));
+    expectNoConsoleOutput();
   });
 
-  it('returns empty credentials and warns when the api hash is missing', () => {
-    process.env.TELEGRAM_API_ID = '12345';
+  it('warns when the api id is not numeric', () => {
+    // Arrange
+    process.env.TELEGRAM_API_ID = 'not-a-number';
+    process.env.TELEGRAM_API_HASH = INPUT_API_HASH;
+
+    // Act
+    getTelegramConfig();
+
+    // Assert
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('TELEGRAM_API_ID'));
+  });
+
+  it('returns an empty hash and warns once through the Logger when the api hash is missing', () => {
+    // Arrange
+    process.env.TELEGRAM_API_ID = String(INPUT_API_ID);
     delete process.env.TELEGRAM_API_HASH;
 
-    const actual = getTelegramConfig();
+    // Act
+    const actualResult = getTelegramConfig();
 
-    expect(actual.apiHash).toBe('');
-    expect(console.warn).toHaveBeenCalled();
+    // Assert
+    expect(actualResult).toEqual({ apiId: INPUT_API_ID, apiHash: '' });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('TELEGRAM_API_HASH'));
+    expectNoConsoleOutput();
+  });
+
+  it('warns for both variables when both are missing', () => {
+    // Arrange
+    delete process.env.TELEGRAM_API_ID;
+    delete process.env.TELEGRAM_API_HASH;
+    const expectedWarnCount = 2;
+
+    // Act
+    const actualResult = getTelegramConfig();
+
+    // Assert
+    expect(actualResult).toEqual({ apiId: 0, apiHash: '' });
+    expect(warnSpy).toHaveBeenCalledTimes(expectedWarnCount);
+    expectNoConsoleOutput();
+  });
+
+  it('logs plain ASCII warnings (no emoji)', () => {
+    // Arrange
+    delete process.env.TELEGRAM_API_ID;
+    delete process.env.TELEGRAM_API_HASH;
+
+    // Act
+    getTelegramConfig();
+
+    // Assert
+    const actualText = warnSpy.mock.calls.flat().map(String).join('\n');
+    expect(actualText).toMatch(/^[\x20-\x7E\n]+$/);
   });
 });

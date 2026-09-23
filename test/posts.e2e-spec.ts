@@ -1,3 +1,4 @@
+import { NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -5,6 +6,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { API_KEYS_ENV_VAR } from '../src/config/api-keys.config';
 import { API_KEY_HEADER, SESSION_HEADER } from '../src/shared/constants/http.constants';
+import { TooManyRequestsException } from '../src/shared/exceptions/too-many-requests.exception';
 import { configureHttpPipeline } from '../src/shared/utils/http-pipeline';
 import {
   CHANNEL_USERNAME_MAX_LENGTH,
@@ -14,10 +16,16 @@ import {
   HOURS_BACK_MIN,
 } from '../src/telegram/dto/messages.dto';
 import { TelegramService } from '../src/telegram/telegram.service';
+import {
+  CHANNEL_UNAVAILABLE_MESSAGE,
+  INVALID_SESSION_MESSAGE,
+} from '../src/telegram/utils/telegram-errors';
 
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
+const HTTP_NOT_FOUND = 404;
+const HTTP_TOO_MANY_REQUESTS = 429;
 
 const OUT_OF_RANGE_STEP = 1;
 const FIRST_CHARACTER_LENGTH = 1;
@@ -30,7 +38,8 @@ const INPUT_PADDED_SESSION_STRING = `  ${INPUT_FAKE_SESSION_STRING}  `;
 const INPUT_WHITESPACE_ONLY_SESSION_STRING = '   ';
 const INPUT_MALFORMED_CHANNEL = '1bad.channel';
 
-const EXPECTED_POSTS_RESPONSE = { posts: [], count: 0 };
+const EXPECTED_POSTS_RESPONSE = { posts: [], count: 0, isTruncated: false };
+const INPUT_FLOOD_SECONDS = 30;
 
 /** No real TelegramService is constructed, so nothing touches Telegram or the filesystem. */
 const mockTelegramService = {
@@ -162,6 +171,77 @@ describe('channel posts route (e2e)', () => {
         .set(SESSION_HEADER, INPUT_FAKE_SESSION_STRING);
 
       expect(JSON.stringify(actualResponse.body)).not.toContain(INPUT_FAKE_SESSION_STRING);
+    });
+  });
+
+  describe('response contract', () => {
+    it('returns isTruncated from the service unchanged', async () => {
+      // Arrange
+      const expectedBody = { posts: [], count: 0, isTruncated: true };
+      mockTelegramService.getChannelPosts.mockResolvedValue(expectedBody);
+
+      // Act
+      const actualResponse = await request(app.getHttpServer())
+        .get(buildPostsRoute(INPUT_FAKE_CHANNEL))
+        .set(API_KEY_HEADER, INPUT_FAKE_API_KEY)
+        .set(SESSION_HEADER, INPUT_FAKE_SESSION_STRING);
+
+      // Assert
+      expect(actualResponse.status).toBe(HTTP_OK);
+      expect(actualResponse.body).toEqual(expectedBody);
+    });
+  });
+
+  describe('mapped Telegram failures', () => {
+    it('answers 401 when the service rejects the session', async () => {
+      // Arrange
+      mockTelegramService.getChannelPosts.mockRejectedValue(
+        new UnauthorizedException(INVALID_SESSION_MESSAGE),
+      );
+
+      // Act
+      const actualResponse = await request(app.getHttpServer())
+        .get(buildPostsRoute(INPUT_FAKE_CHANNEL))
+        .set(API_KEY_HEADER, INPUT_FAKE_API_KEY)
+        .set(SESSION_HEADER, INPUT_FAKE_SESSION_STRING);
+
+      // Assert
+      expect(actualResponse.status).toBe(HTTP_UNAUTHORIZED);
+      expect(actualResponse.body.message).toBe(INVALID_SESSION_MESSAGE);
+    });
+
+    it('answers 404 when the channel is not accessible', async () => {
+      // Arrange
+      mockTelegramService.getChannelPosts.mockRejectedValue(
+        new NotFoundException(CHANNEL_UNAVAILABLE_MESSAGE),
+      );
+
+      // Act
+      const actualResponse = await request(app.getHttpServer())
+        .get(buildPostsRoute(INPUT_FAKE_CHANNEL))
+        .set(API_KEY_HEADER, INPUT_FAKE_API_KEY)
+        .set(SESSION_HEADER, INPUT_FAKE_SESSION_STRING);
+
+      // Assert
+      expect(actualResponse.status).toBe(HTTP_NOT_FOUND);
+      expect(actualResponse.body.message).toBe(CHANNEL_UNAVAILABLE_MESSAGE);
+    });
+
+    it('answers 429 with the wait duration on a Telegram flood wait', async () => {
+      // Arrange
+      mockTelegramService.getChannelPosts.mockRejectedValue(
+        new TooManyRequestsException(INPUT_FLOOD_SECONDS),
+      );
+
+      // Act
+      const actualResponse = await request(app.getHttpServer())
+        .get(buildPostsRoute(INPUT_FAKE_CHANNEL))
+        .set(API_KEY_HEADER, INPUT_FAKE_API_KEY)
+        .set(SESSION_HEADER, INPUT_FAKE_SESSION_STRING);
+
+      // Assert
+      expect(actualResponse.status).toBe(HTTP_TOO_MANY_REQUESTS);
+      expect(actualResponse.body.retryAfterSeconds).toBe(INPUT_FLOOD_SECONDS);
     });
   });
 

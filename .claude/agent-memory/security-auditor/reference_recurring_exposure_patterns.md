@@ -19,6 +19,11 @@ than by re-deriving them from source each time.
 - Values in committed docs and Postman variables have always been placeholders or empty. `/data/` and
   `.env` have never been committed on any branch. Re-verify cheaply, do not assume a breach.
 
+- GramJS 2.26.x error text: `RPCError.message` is `"<code>: <CODE> (caused by <Request.className>)"` and
+  never holds request args (`errors/RPCBaseErrors.js`), so logging `errorMessage` is safe. But
+  `client/users.js` entity resolution throws plain `Error`s that echo the caller's username/string, so
+  any classifier that substring-matches `error.message` can be steered by the route parameter.
+
 Framework behaviour that decides whether a control holds (verified while auditing, not obvious from
 project source):
 

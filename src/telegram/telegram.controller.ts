@@ -55,7 +55,8 @@ export class TelegramController {
 
   /**
    * GET /telegram/me
-   * Проверяет валидность сессии — всегда 200, status: success | failed.
+   * Проверяет валидность сессии: 200 со status success | failed, где failed — сессия неизвестна
+   * или отозвана. Сбой связи с Telegram — 503, ограничение частоты — 429.
    * Строка сессии приходит заголовком x-session-string.
    */
   @Get('me')

@@ -12,4 +12,4 @@ Project-scoped memory for this agent. Record durable decisions, user feedback, a
 - (none yet)
 
 ## Reference
-- (none yet)
+- [GramJS verified defaults](reference_gramjs_defaults.md) — 2.26.22 defaults, console logger, 9 s ping loop, destroy vs disconnect

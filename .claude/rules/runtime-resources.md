@@ -15,8 +15,15 @@ A leaked resource here is not a latency problem, it is a recurring bill: a `Tele
 - SESSION_CACHE_IDLE_TTL_MS = 30 * 60 * 1000 (evict and disconnect an idle client)
 - SESSION_CACHE_SWEEP_INTERVAL_MS = 5 * 60 * 1000
 - AUTH_STATE_TTL_MS = 10 * 60 * 1000
+- AUTH_STATE_SWEEP_INTERVAL_MS = 5 * 60 * 1000
 - EXTERNAL_CALL_TIMEOUT_MS = 30_000
 - FLOOD_SLEEP_THRESHOLD_S = 5 (GramJS default is 60 and must be overridden)
+- CONNECTION_RETRIES_COUNT = 3 (GramJS default is Infinity)
+- REQUEST_RETRIES_COUNT = 3
+- RETRY_DELAY_MS = 1000
+- POSTS_PAGE_SIZE = 100
+- POSTS_MAX_MESSAGES = 1000 (walk ceiling per request; beyond it the response sets `isTruncated`)
+- Location: SESSION_CACHE_MAX_ENTRIES through POSTS_MAX_MESSAGES are defined in `src/telegram/constants.ts`
 - PING_INTERVAL_S = 9 (GramJS internal, per connected client — not configurable)
 - RUNTIME_INSTANCE_COUNT = 1 (the in-memory session cache has no cross-instance affinity)
 - RUNTIME_FILESYSTEM = ephemeral (reset on every deploy and restart)

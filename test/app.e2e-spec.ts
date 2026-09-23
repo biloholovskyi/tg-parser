@@ -1,3 +1,4 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -9,6 +10,7 @@ import { API_KEYS_ENV_VAR } from '../src/config/api-keys.config';
 import { API_KEY_HEADER, SESSION_HEADER } from '../src/shared/constants/http.constants';
 import { configureHttpPipeline } from '../src/shared/utils/http-pipeline';
 import { TelegramService } from '../src/telegram/telegram.service';
+import { TELEGRAM_UNAVAILABLE_MESSAGE } from '../src/telegram/utils/telegram-errors';
 
 const HEALTH_ROUTE = '/telegram/health';
 const ME_ROUTE = '/telegram/me';
@@ -19,6 +21,7 @@ const EXPECTED_HEALTH_BODY = { status: 'ok' };
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
+const HTTP_SERVICE_UNAVAILABLE = 503;
 
 const INPUT_FAKE_API_KEY = 'fake-e2e-api-key';
 const INPUT_FAKE_SESSION_STRING = 'fake-session-string';
@@ -167,6 +170,24 @@ describe('health probe (e2e)', () => {
     expect(actualResponse.status).toBe(HTTP_OK);
     expect(actualResponse.body).toEqual(expectedBody);
     expect(mockTelegramService.checkSession).toHaveBeenCalledWith(INPUT_FAKE_SESSION_STRING);
+  });
+
+  it('propagates a Telegram outage from the session check as 503', async () => {
+    // Arrange
+    mockTelegramService.checkSession.mockRejectedValue(
+      new ServiceUnavailableException(TELEGRAM_UNAVAILABLE_MESSAGE),
+    );
+
+    // Act
+    const actualResponse = await request(app.getHttpServer())
+      .get(ME_ROUTE)
+      .set(API_KEY_HEADER, INPUT_FAKE_API_KEY)
+      .set(SESSION_HEADER, INPUT_FAKE_SESSION_STRING);
+
+    // Assert
+    expect(actualResponse.status).toBe(HTTP_SERVICE_UNAVAILABLE);
+    expect(actualResponse.body.message).toBe(TELEGRAM_UNAVAILABLE_MESSAGE);
+    expect(actualResponse.body).not.toEqual({ status: 'failed' });
   });
 
   it('reports a failed session when the session header is absent', async () => {

@@ -16,6 +16,7 @@ Project-specific TypeScript config and decorator usage.
 - `esModuleInterop: true`, `allowSyntheticDefaultImports: true`, `skipLibCheck: true`
 - `strictNullChecks: false`, `noImplicitAny: false`, `strictBindCallApply: false`, `forceConsistentCasingInFileNames: false`
 - No path aliases are configured; imports are relative
+- ESLint: `no-console` is an error for `src/**/*.ts` except `*.spec.ts` (override in `.eslintrc.js`), backed by the scan in `src/no-console.spec.ts`
 
 ## Known Gaps
 

@@ -1,0 +1,25 @@
+- phase-01 start 2026-09-23T11:35:20Z
+- phase-01 end 2026-09-23T11:41:19Z
+  - Кэш клиентов: `SessionClientCache` в `src/telegram/utils/`, сервис хранит его в поле `clients`.
+  - Константы модуля — `src/telegram/constants.ts`; туда же класть потолок и размер страницы выборки фазы 02.
+  - `isInvalidSessionError` уже есть в `utils/telegram-errors.ts` — переиспользовать для ответа 401.
+  - `withTimeout` — единственный способ ставить таймаут внешнего вызова.
+  - `getChannelPosts` ещё содержит `Math.min(200, ...)` и старое сопоставление ошибок — это объём фазы 02.
+  - `console.*` и `instanceId` оставлены для фазы 03.
+  - Тесты сервиса подменяют `fs` и `telegram`; шаблон в `src/telegram/telegram.service.spec.ts`.
+- phase-02 start 2026-09-23T11:44:03Z
+- phase-02 end 2026-09-23T11:54:04Z
+  - Ошибки наружу идут только через `toHttpException`; в логах пока `console.error` с `error.message` — фаза 03 переводит на `Logger`.
+  - 429 от сервиса несёт ожидание только в теле (`retryAfterSeconds`), заголовок `Retry-After` ставят лишь гварды — открытый вопрос.
+  - Оставшиеся `console.*` и `instanceId` в `telegram.service.ts` — объём фазы 03.
+  - В `authenticate` остались логи с номером телефона при восстановлении authState из файла — убрать в фазе 03.
+  - Непокрыто тестами: медиа-ветки `parseMessage`, восстановление из `data/*.json`, ответ `needsPassword`.
+- phase-03 start 2026-09-23T13:55:14Z
+- phase-03 end 2026-09-23T14:01:27Z
+  - `.eslintrc.js` получил override `no-console` для `src/` — упомянуть в CHANGELOG.
+  - Имя канала пишется в строку исхода выборки; это публичный идентификатор, не персональные данные.
+  - Открыт вопрос заголовка `Retry-After` для 429 от сервиса (из фазы 02).
+  - Файловое хранилище сессий по-прежнему пишет номера и строки сессий в `data/` — отклонение из `telegram.md`, решается в блоке 08-09.
+  - Для Finalize: smoke-запуск, drift-проверка (`architecture.md`, `CLAUDE.md` про форму ответа и коды), целевая версия ещё не задана.
+- phase-04 start 2026-09-23T14:58:49Z
+- phase-04 end 2026-09-23T15:14:12Z

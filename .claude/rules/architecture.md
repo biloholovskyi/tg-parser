@@ -28,7 +28,7 @@ Controllers must be thin — delegate all logic to the service. Follow the patte
 
 ## Key Directories
 
-- `src/telegram/` — the single feature module: auth, session checks, channel post fetching
+- `src/telegram/` — the single feature module: auth, session checks, channel post fetching; module-local `constants.ts` and `utils/` (`session-client-cache.ts`, `telegram-errors.ts`, `with-timeout.ts`)
 - `src/config/` — env-backed configuration loaders (`telegram.config.ts`, `cors.config.ts`, `api-keys.config.ts`)
 - `src/shared/` — cross-cutting helpers: `constants/` (`http.constants.ts`, `rate-limit.constants.ts`), `utils/` (`http-pipeline.ts`, `process-handlers.ts`, `rate-limit-store.ts`, header readers), `guards/` (caller authentication and rate limits), `decorators/` (route markers and the session parameter), `exceptions/` (the 429 response)
 - `src/app.module.ts` — root module
@@ -42,16 +42,16 @@ Base path `telegram`:
 
 - `GET /telegram/health` — liveness probe, also the Railway health check target
 - `POST /telegram/auth` — multi-step auth: phone number, then SMS code, then optional 2FA password; returns a `sessionString`
-- `GET /telegram/me` — session validity and current account info, credential in SESSION_HEADER
-- `GET /telegram/channel/:channelUsername/posts` — time-filtered posts for a channel, credential in SESSION_HEADER, window in `hoursBack`
+- `GET /telegram/me` — session validity check returning `{ status: 'success' | 'failed' }`, credential in SESSION_HEADER; transport failures and flood waits are thrown as mapped HTTP errors, not reported as `failed`
+- `GET /telegram/channel/:channelUsername/posts` — time-filtered posts for a channel, credential in SESSION_HEADER, window in `hoursBack`; returns `GetPostsResponse` (`posts`, `count`, `isTruncated`)
 
 Contract changes to any of these are governed by `.claude/rules/api-contracts.md`.
 
 ## Session Model (critical)
 
-- `TelegramClient` instances are cached in memory in a `Map<sessionString, TelegramClient>` inside `TelegramService`.
+- `TelegramClient` instances are cached in memory in a `SessionClientCache` (`src/telegram/utils/session-client-cache.ts`, backed by a `Map` keyed by `sessionString`) owned by `TelegramService`.
 - There is no database: every cached client and every issued session is lost on process restart, and a restart forces callers to re-authenticate or re-supply their `sessionString`.
-- The cache is bounded, idle entries are evicted, and eviction disconnects the client. Ceilings and TTLs are in `.claude/rules/runtime-resources.md`.
+- The cache is bounded (least recently used entry evicted at the ceiling), idle entries are swept out, and every eviction releases the client with `destroy()`. Ceilings and TTLs are in `.claude/rules/runtime-resources.md`.
 - The cache is per-process. Any horizontal scaling of the service breaks session affinity; treat multi-instance deployment as a design change, not a config change.
 - The deployment filesystem is ephemeral, so disk is never part of the session model.
 - A file-backed session store currently exists in the code against this model; it is an open decision recorded under Known Deviations in `.claude/rules/telegram.md`.

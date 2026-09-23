@@ -14,4 +14,6 @@ export interface TelegramMedia {
 export interface GetPostsResponse {
   posts: TelegramPost[];
   count: number;
+  /** True when the walk hit POSTS_MAX_MESSAGES before leaving the time window: older posts exist. */
+  isTruncated: boolean;
 }

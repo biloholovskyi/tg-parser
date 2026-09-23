@@ -10,7 +10,10 @@ export function toRetryAfterSeconds(retryAfterMs: number): number {
 }
 
 export class TooManyRequestsException extends HttpException {
-  constructor(public readonly retryAfterSeconds: number) {
+  constructor(
+    public readonly retryAfterSeconds: number,
+    cause?: unknown,
+  ) {
     super(
       {
         statusCode: HttpStatus.TOO_MANY_REQUESTS,
@@ -18,6 +21,7 @@ export class TooManyRequestsException extends HttpException {
         retryAfterSeconds,
       },
       HttpStatus.TOO_MANY_REQUESTS,
+      { cause },
     );
   }
 }

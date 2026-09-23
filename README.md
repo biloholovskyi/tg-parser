@@ -140,11 +140,11 @@ curl http://localhost:8080/telegram/me \
   -H "x-session-string: 1AaBbCcDd...твоя_сессия"
 ```
 
-Ответ всегда 200: `{"status":"success"}` или `{"status":"failed"}`.
+Ответ 200: `{"status":"success"}` или `{"status":"failed"}`, где `failed` означает неизвестную или отозванную сессию. Если Telegram недоступен, ответ 503, при ограничении частоты со стороны Telegram — 429: это не приговор сессии, запрос стоит повторить позже.
 
 ### GET /telegram/channel/:channelUsername/posts
 
-Получает посты канала за последние 24 часа.
+Получает посты канала за последние `hoursBack` часов (по умолчанию 24). За один запрос просматривается не больше 1000 сообщений; если в окне их больше, ответ содержит `"isTruncated": true`.
 
 **Параметры:**
 - `channelUsername` (путь) - username канала, с `@` или без
@@ -171,18 +171,30 @@ curl "http://localhost:8080/telegram/channel/durov/posts?hoursBack=24" \
         {
           "type": "photo"
         }
-      ]
+      ],
+      "postUrl": "https://t.me/durov/12345"
     },
     {
       "id": 12344,
       "text": "Еще один пост",
       "date": "2025-11-06T08:15:00.000Z",
-      "media": []
+      "media": [],
+      "postUrl": "https://t.me/durov/12344"
     }
   ],
-  "count": 2
+  "count": 2,
+  "isTruncated": false
 }
 ```
+
+**Коды ошибок:**
+- `400` — не передана строка сессии, неверный код или пароль 2FA (у каждого случая своё сообщение)
+- `401` — сессия неизвестна или отозвана, нужно авторизоваться заново
+- `404` — канал не найден или недоступен этому аккаунту
+- `429` — Telegram просит подождать, срок в поле `retryAfterSeconds`
+- `500` — не заданы `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`
+- `502` — прочий отказ Telegram
+- `503` — Telegram недоступен
 
 **Типы медиа:**
 - `photo` - фото
@@ -232,6 +244,8 @@ src/
 │   ├── telegram.module.ts    # Модуль Telegram
 │   ├── telegram.service.ts   # Бизнес-логика (GramJS)
 │   ├── telegram.controller.ts # REST endpoints
+│   ├── constants.ts          # Лимиты кэша, таймауты, коды ошибок MTProto
+│   ├── utils/                # Кэш клиентов, таймауты, сопоставление ошибок
 │   ├── dto/
 │   │   ├── auth.dto.ts      # DTO авторизации
 │   │   └── messages.dto.ts  # DTO запроса постов

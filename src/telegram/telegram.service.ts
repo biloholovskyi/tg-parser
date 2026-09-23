@@ -1,12 +1,49 @@
-import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Logger,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { Api } from 'telegram/tl';
 import { computeCheck } from 'telegram/Password';
+import { Logger as GramLogger, LogLevel } from 'telegram/extensions/Logger';
 import { getTelegramConfig } from '../config/telegram.config';
-import { TelegramPost, TelegramMedia } from './interfaces/message.interface';
+import { MS_IN_SECOND } from '../shared/constants/rate-limit.constants';
+import { HOURS_BACK_DEFAULT } from './dto/messages.dto';
+import { GetPostsResponse, TelegramMedia, TelegramPost } from './interfaces/message.interface';
+import {
+  AUTH_STATE_SWEEP_INTERVAL_MS,
+  AUTH_STATE_TTL_MS,
+  CONNECTION_LABEL,
+  CONNECTION_RETRIES_COUNT,
+  EXTERNAL_CALL_TIMEOUT_MS,
+  FLOOD_SLEEP_THRESHOLD_S,
+  POSTS_MAX_MESSAGES,
+  POSTS_PAGE_SIZE,
+  REQUEST_RETRIES_COUNT,
+  RETRY_DELAY_MS,
+  SESSION_CACHE_IDLE_TTL_MS,
+  SESSION_CACHE_MAX_ENTRIES,
+  SECONDS_IN_HOUR,
+  SESSION_CACHE_SWEEP_INTERVAL_MS,
+} from './constants';
+import { SessionClientCache } from './utils/session-client-cache';
+import {
+  describeError,
+  invalidSessionException,
+  isInvalidSessionError,
+  missingConfigException,
+  toHttpException,
+} from './utils/telegram-errors';
+import { withTimeout } from './utils/with-timeout';
+
+const CODE_NOT_REQUESTED_MESSAGE = 'Request a code first by sending phoneNumber without a code';
 
 interface AuthState {
   client: TelegramClient;
@@ -16,11 +53,15 @@ interface AuthState {
 }
 
 @Injectable()
-export class TelegramService {
-  private static instanceCount = 0;
-  private instanceId: number;
-  private clients: Map<string, TelegramClient> = new Map();
+export class TelegramService implements OnModuleDestroy {
+  private readonly logger = new Logger(TelegramService.name);
+  private readonly clients = new SessionClientCache<TelegramClient>({
+    maxEntries: SESSION_CACHE_MAX_ENTRIES,
+    idleTtlMs: SESSION_CACHE_IDLE_TTL_MS,
+    sweepIntervalMs: SESSION_CACHE_SWEEP_INTERVAL_MS,
+  });
   private authStates: Map<string, AuthState> = new Map();
+  private readonly authStateSweepTimer: NodeJS.Timeout;
   private config: { apiId: number; apiHash: string };
   private readonly dataDir = path.join(process.cwd(), 'data');
   private readonly authStatesFile = path.join(process.cwd(), 'data', 'auth-states.json');
@@ -33,32 +74,49 @@ export class TelegramService {
     // Не валидируем при создании - только при использовании
     try {
       this.config = getTelegramConfig();
-    } catch (error: any) {
-      console.warn('[TelegramService] Config not loaded, will fail on first use:', error.message);
+    } catch (error: unknown) {
+      this.logger.warn(`Config not loaded, will fail on first use: ${describeError(error)}`);
       this.config = { apiId: 0, apiHash: '' };
     }
 
-    // Отслеживаем инстансы
-    TelegramService.instanceCount++;
-    this.instanceId = TelegramService.instanceCount;
-    console.log(`[TelegramService] Created instance #${this.instanceId}`);
+    this.authStateSweepTimer = setInterval(
+      () => this.sweepExpiredAuthStates(),
+      AUTH_STATE_SWEEP_INTERVAL_MS,
+    );
+    this.authStateSweepTimer.unref();
+    this.clients.startSweeping();
+  }
 
-    // TTL-очистка незавершённых authStates каждые 5 минут (таймаут — 10 минут)
-    const AUTH_STATE_TTL = 10 * 60 * 1000;
-    setInterval(
-      () => {
-        const now = Date.now();
-        for (const [phone, state] of this.authStates) {
-          if (now - state.createdAt > AUTH_STATE_TTL) {
-            state.client.disconnect().catch(() => {});
-            this.authStates.delete(phone);
-            this.deleteAuthState(phone);
-            console.log(`[TelegramService] Cleaned up expired authState for ${phone}`);
-          }
-        }
-      },
-      5 * 60 * 1000,
-    ).unref();
+  /**
+   * Releases every cached and pending client and stops the background sweeps.
+   */
+  async onModuleDestroy(): Promise<void> {
+    clearInterval(this.authStateSweepTimer);
+    const pending = [...this.authStates.values()].map((state) => releaseClient(state.client));
+    this.authStates.clear();
+    await Promise.all([this.clients.close(), ...pending]);
+  }
+
+  /** A concurrent request may have stored its own pending client meanwhile; release it before overwriting. */
+  private async releaseReplacedAuthState(
+    phoneNumber: string,
+    client: TelegramClient,
+  ): Promise<void> {
+    const replaced = this.authStates.get(phoneNumber);
+    if (replaced && replaced.client !== client) {
+      await releaseClient(replaced.client);
+    }
+  }
+
+  private sweepExpiredAuthStates(): void {
+    const now = Date.now();
+    for (const [phone, state] of this.authStates) {
+      if (now - state.createdAt > AUTH_STATE_TTL_MS) {
+        void releaseClient(state.client);
+        this.authStates.delete(phone);
+        this.deleteAuthState(phone);
+      }
+    }
   }
 
   /**
@@ -67,8 +125,24 @@ export class TelegramService {
   private createClient(sessionString: string = ''): TelegramClient {
     const session = new StringSession(sessionString);
     return new TelegramClient(session, this.config.apiId, this.config.apiHash, {
-      connectionRetries: 5,
+      floodSleepThreshold: FLOOD_SLEEP_THRESHOLD_S,
+      connectionRetries: CONNECTION_RETRIES_COUNT,
+      requestRetries: REQUEST_RETRIES_COUNT,
+      retryDelay: RETRY_DELAY_MS,
+      autoReconnect: true,
+      // GramJS prints to the console on its own; keep it to errors so it cannot flood the billed log.
+      baseLogger: new GramLogger(LogLevel.ERROR),
     });
+  }
+
+  /** Connects a freshly created client, releasing it if the connection fails. */
+  private async connectOrRelease(client: TelegramClient): Promise<void> {
+    try {
+      await withTimeout(client.connect(), EXTERNAL_CALL_TIMEOUT_MS, CONNECTION_LABEL);
+    } catch (error: unknown) {
+      await releaseClient(client);
+      throw error;
+    }
   }
 
   /**
@@ -86,7 +160,7 @@ export class TelegramService {
   }> {
     // Валидация конфигурации при использовании
     if (!this.config.apiId || !this.config.apiHash) {
-      throw new Error('TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured');
+      throw missingConfigException();
     }
 
     let client: TelegramClient | null = null;
@@ -96,39 +170,23 @@ export class TelegramService {
         // Если уже есть незавершённый authState — отключаем старый клиент
         const existingState = this.authStates.get(phoneNumber);
         if (existingState) {
-          existingState.client.disconnect().catch(() => {});
+          void releaseClient(existingState.client);
           this.authStates.delete(phoneNumber);
           this.deleteAuthState(phoneNumber);
-          console.log(`[authenticate] Cleaned up previous authState for ${phoneNumber}`);
         }
 
         client = this.createClient();
+        await this.connectOrRelease(client);
 
-        // Таймаут для подключения (30 секунд)
-        const connectPromise = client.connect();
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Connection timeout')), 30000),
+        const result = await withTimeout(
+          client.sendCode({ apiId: this.config.apiId, apiHash: this.config.apiHash }, phoneNumber),
+          EXTERNAL_CALL_TIMEOUT_MS,
+          'Send code',
         );
-
-        await Promise.race([connectPromise, timeoutPromise]);
-
-        // Таймаут для отправки кода (30 секунд)
-        // sendCode принимает apiId и apiHash как параметры конструктора, не здесь
-        const sendCodePromise = client.sendCode(
-          {
-            apiId: this.config.apiId,
-            apiHash: this.config.apiHash,
-          },
-          phoneNumber,
-        );
-        const sendCodeTimeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Send code timeout')), 30000),
-        );
-
-        const result = (await Promise.race([sendCodePromise, sendCodeTimeoutPromise])) as any;
 
         // Сохраняем состояние для следующего запроса
         const createdAt = Date.now();
+        await this.releaseReplacedAuthState(phoneNumber, client);
         this.authStates.set(phoneNumber, {
           client: client!,
           phoneCodeHash: result.phoneCodeHash,
@@ -136,6 +194,7 @@ export class TelegramService {
           createdAt,
         });
         this.saveAuthState(phoneNumber, result.phoneCodeHash, createdAt);
+        this.logger.log('Auth: code sent');
 
         return {
           needsCode: true,
@@ -150,52 +209,44 @@ export class TelegramService {
         const saved = persisted.get(phoneNumber);
         if (saved) {
           const restoredClient = this.createClient();
-          await restoredClient.connect();
+          await this.connectOrRelease(restoredClient);
           authState = {
             client: restoredClient,
             phoneCodeHash: saved.phoneCodeHash,
             phoneNumber,
             createdAt: saved.createdAt,
           };
+          await this.releaseReplacedAuthState(phoneNumber, restoredClient);
           this.authStates.set(phoneNumber, authState);
-          console.log(`[authenticate] Restored authState from file for ${phoneNumber}`);
+          this.logger.debug('Auth: pending state restored from file');
         }
       }
       if (!authState) {
-        throw new Error('Please request code first by sending phoneNumber without code');
+        throw new BadRequestException(CODE_NOT_REQUESTED_MESSAGE);
       }
 
       try {
-        // Таймаут для проверки кода (30 секунд)
-        const signInPromise = authState.client.invoke(
-          new Api.auth.SignIn({
-            phoneNumber: phoneNumber,
-            phoneCodeHash: authState.phoneCodeHash,
-            phoneCode: phoneCode,
-          }),
+        await withTimeout(
+          authState.client.invoke(
+            new Api.auth.SignIn({
+              phoneNumber: phoneNumber,
+              phoneCodeHash: authState.phoneCodeHash,
+              phoneCode: phoneCode,
+            }),
+          ),
+          EXTERNAL_CALL_TIMEOUT_MS,
+          'Sign in',
         );
-        const signInTimeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Sign in timeout')), 30000),
-        );
-
-        await Promise.race([signInPromise, signInTimeoutPromise]);
 
         // Успешная авторизация
         const sessionString = (authState.client.session as StringSession).save();
 
         // Сохраняем клиента под session string
-        this.clients.set(sessionString, authState.client);
+        await this.clients.set(sessionString, authState.client);
         this.authStates.delete(phoneNumber);
         this.saveSession(sessionString);
         this.deleteAuthState(phoneNumber);
-
-        console.log(`[authenticate] Instance #${this.instanceId}: ✅ Client saved successfully`);
-        console.log('[authenticate] Session string length:', sessionString.length);
-        console.log('[authenticate] Total cached clients:', this.clients.size);
-        console.log(
-          '[authenticate] Clients Map keys:',
-          Array.from(this.clients.keys()).map((k) => k.substring(0, 20)),
-        );
+        this.logger.log('Auth: authenticated');
 
         return {
           sessionString,
@@ -205,6 +256,7 @@ export class TelegramService {
         // Нужен 2FA пароль
         if (error.message.includes('SESSION_PASSWORD_NEEDED')) {
           if (!password) {
+            this.logger.log('Auth: 2FA password required');
             return {
               needsPassword: true,
               message: '2FA password is required.',
@@ -212,45 +264,29 @@ export class TelegramService {
           }
 
           // Шаг 3: Проверка 2FA пароля
-          const getPasswordPromise = authState.client.invoke(new Api.account.GetPassword());
-          const getPasswordTimeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Get password timeout')), 30000),
+          const passwordInfo = await withTimeout(
+            authState.client.invoke(new Api.account.GetPassword()),
+            EXTERNAL_CALL_TIMEOUT_MS,
+            'Get password',
           );
-          const passwordInfo = (await Promise.race([
-            getPasswordPromise,
-            getPasswordTimeoutPromise,
-          ])) as any;
 
           // Вычисляем SRP hash для пароля
           const passwordSrp = await computeCheck(passwordInfo, password);
 
-          const checkPasswordPromise = authState.client.invoke(
-            new Api.auth.CheckPassword({
-              password: passwordSrp,
-            }),
+          await withTimeout(
+            authState.client.invoke(new Api.auth.CheckPassword({ password: passwordSrp })),
+            EXTERNAL_CALL_TIMEOUT_MS,
+            'Check password',
           );
-          const checkPasswordTimeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Check password timeout')), 30000),
-          );
-          await Promise.race([checkPasswordPromise, checkPasswordTimeoutPromise]);
 
           const sessionString = (authState.client.session as StringSession).save();
 
           // Сохраняем клиента под session string
-          this.clients.set(sessionString, authState.client);
+          await this.clients.set(sessionString, authState.client);
           this.authStates.delete(phoneNumber);
           this.saveSession(sessionString);
           this.deleteAuthState(phoneNumber);
-
-          console.log(
-            `[authenticate] Instance #${this.instanceId}: ✅ Client saved successfully (2FA)`,
-          );
-          console.log('[authenticate] Session string length:', sessionString.length);
-          console.log('[authenticate] Total cached clients:', this.clients.size);
-          console.log(
-            '[authenticate] Clients Map keys:',
-            Array.from(this.clients.keys()).map((k) => k.substring(0, 20)),
-          );
+          this.logger.log('Auth: authenticated with 2FA');
 
           return {
             sessionString,
@@ -260,32 +296,21 @@ export class TelegramService {
           throw error;
         }
       }
-    } catch (error: any) {
-      console.error('Authentication error:', error);
-
+    } catch (error: unknown) {
       // Очистка состояния при ошибке
       const authState = this.authStates.get(phoneNumber);
       if (authState) {
-        try {
-          await authState.client.disconnect().catch(() => {});
-        } catch (e: any) {
-          // Игнорируем ошибки при отключении
-        }
+        await releaseClient(authState.client);
         this.authStates.delete(phoneNumber);
         this.deleteAuthState(phoneNumber);
       }
 
       // Очистка клиента, если он был создан, но не сохранен
-      if (client && !this.clients.has((client.session as StringSession).save())) {
-        try {
-          await client.disconnect().catch(() => {});
-        } catch (e: any) {
-          // Игнорируем ошибки при отключении
-        }
+      if (client && client !== authState?.client) {
+        await releaseClient(client);
       }
 
-      const errorMessage = error.message || 'Unknown error';
-      throw new BadRequestException(`Authentication failed: ${errorMessage}`);
+      throw this.failWith('Auth', error);
     }
   }
 
@@ -297,132 +322,135 @@ export class TelegramService {
     // Очищаем от пробелов/переносов
     const cleanSession = sessionString.trim();
 
-    console.log(`[getClient] Instance #${this.instanceId}: Looking for cached client...`);
-    console.log('[getClient] Total cached clients:', this.clients.size);
-
-    if (!this.clients.has(cleanSession)) {
-      // Попытка восстановить клиента из файла
-      const persisted = this.loadSessions();
-      if (persisted.has(cleanSession)) {
-        console.log('[getClient] Session found in file, restoring client...');
-        const restoredClient = this.createClient(cleanSession);
-        await restoredClient.connect();
-        this.clients.set(cleanSession, restoredClient);
-        console.log('[getClient] ✅ Client restored from file');
-        return restoredClient;
-      }
-
-      console.error('[getClient] ❌ Client not found in cache or file!');
-      throw new BadRequestException(
-        'Session not found. Please authenticate first using POST /telegram/auth',
-      );
+    const cached = this.clients.get(cleanSession);
+    if (cached) {
+      return cached;
     }
 
-    console.log('[getClient] ✅ Found cached client');
-    return this.clients.get(cleanSession);
+    // Попытка восстановить клиента из файла
+    const persisted = this.loadSessions();
+    if (persisted.has(cleanSession)) {
+      const restoredClient = this.createClient(cleanSession);
+      await this.connectOrRelease(restoredClient);
+      await this.clients.set(cleanSession, restoredClient);
+      return restoredClient;
+    }
+
+    throw invalidSessionException();
+  }
+
+  /** Returns the cached client for the session, reconnecting it when the socket dropped. */
+  private async getConnectedClient(sessionString: string): Promise<TelegramClient> {
+    const client = await this.getClient(sessionString);
+    if (!client.connected) {
+      await withTimeout(client.connect(), EXTERNAL_CALL_TIMEOUT_MS, CONNECTION_LABEL);
+    }
+    return client;
+  }
+
+  /** Drops a cached client once Telegram has rejected its session for good. */
+  private async evictIfSessionInvalid(sessionString: string, error: unknown): Promise<void> {
+    if (isInvalidSessionError(error)) {
+      const cleanSession = sessionString.trim();
+      await this.clients.evict(cleanSession);
+      // Without this, a revoked session would be restored from the file and reconnected on every call.
+      this.deleteSession(cleanSession);
+    }
   }
 
   /**
-   * Получает посты из канала за указанный период
+   * Returns posts of a channel inside the last `hoursBack` hours.
+   * The walk is paged and capped at POSTS_MAX_MESSAGES; `isTruncated` tells the caller
+   * that older posts inside the window were not returned.
    */
   async getChannelPosts(
     channelUsername: string,
     sessionString: string,
-    hoursBack: number = 24,
-  ): Promise<{ posts: TelegramPost[]; count: number }> {
-    console.log(
-      `[getChannelPosts] Start fetching posts from @${channelUsername} (last ${hoursBack} hours)`,
-    );
-
+    hoursBack: number = HOURS_BACK_DEFAULT,
+  ): Promise<GetPostsResponse> {
     try {
-      console.log('[getChannelPosts] Getting client from session...');
-      const client = await this.getClient(sessionString);
-      console.log('[getChannelPosts] Client obtained successfully');
-
-      // Убеждаемся, что клиент подключен
-      if (!client.connected) {
-        console.log('[getChannelPosts] Client not connected, connecting...');
-        await client.connect();
-      }
-
-      // Вычисляем время начала периода
-      const startTime = Math.floor(Date.now() / 1000) - hoursBack * 3600;
-      console.log(
-        `[getChannelPosts] Filtering posts after: ${new Date(startTime * 1000).toISOString()}`,
+      const client = await this.getConnectedClient(sessionString);
+      const windowStart = Math.floor(Date.now() / MS_IN_SECOND) - hoursBack * SECONDS_IN_HOUR;
+      const { messages, isTruncated } = await this.walkChannel(
+        client,
+        channelUsername,
+        windowStart,
+      );
+      const posts = messages.map((message) => this.parseMessage(message, channelUsername));
+      this.logger.log(
+        `Posts: @${channelUsername} ${hoursBack}h -> ${posts.length} posts, truncated=${isTruncated}`,
       );
 
-      const posts: TelegramPost[] = [];
-
-      // Получаем сообщения из канала (увеличиваем лимит для больших периодов)
-      const limit = Math.min(200, hoursBack * 10); // Динамический лимит на основе периода
-
-      console.log(`[getChannelPosts] Starting to iterate messages (limit: ${limit})...`);
-
-      let messageCount = 0;
-      for await (const message of client.iterMessages(channelUsername, {
-        limit,
-      })) {
-        messageCount++;
-
-        if (messageCount === 1) {
-          console.log('[getChannelPosts] First message received');
-        }
-
-        // Проверяем, что сообщение не старше указанного периода
-        if (message.date < startTime) {
-          console.log(
-            `[getChannelPosts] Message ${messageCount} is older than ${hoursBack}h, stopping`,
-          );
-          break;
-        }
-
-        const post = this.parseMessage(message, channelUsername);
-        if (post) {
-          posts.push(post);
-        }
-
-        if (messageCount % 10 === 0) {
-          console.log(
-            `[getChannelPosts] Processed ${messageCount} messages, found ${posts.length} posts`,
-          );
-        }
-      }
-
-      console.log(
-        `[getChannelPosts] Finished! Total messages: ${messageCount}, posts in last ${hoursBack}h: ${posts.length}`,
-      );
-
-      return {
-        posts,
-        count: posts.length,
-      };
-    } catch (error: any) {
-      console.error('[getChannelPosts] Error:', error);
-      console.error('[getChannelPosts] Error message:', error.message);
-      console.error('[getChannelPosts] Error stack:', error.stack);
-
-      if (error.message?.includes('USERNAME_INVALID')) {
-        throw new BadRequestException('Invalid channel username');
-      }
-      if (error.message?.includes('CHANNEL_PRIVATE')) {
-        throw new BadRequestException('Channel is private and you are not a member');
-      }
-      if (error.message?.includes('No user has')) {
-        throw new BadRequestException(
-          `Channel @${channelUsername} not found or you don't have access`,
-        );
-      }
-
-      throw new InternalServerErrorException(`Failed to get posts: ${error.message}`);
+      return { posts, count: posts.length, isTruncated };
+    } catch (error: unknown) {
+      await this.evictIfSessionInvalid(sessionString, error);
+      throw this.failWith(`Posts: @${channelUsername}`, error);
     }
+  }
+
+  /**
+   * Walks the channel newest-first, page by page, until a message leaves the window,
+   * the history ends, or POSTS_MAX_MESSAGES is reached.
+   */
+  private async walkChannel(
+    client: TelegramClient,
+    channelUsername: string,
+    windowStart: number,
+  ): Promise<{ messages: Api.Message[]; isTruncated: boolean }> {
+    const channel = await withTimeout(
+      client.getInputEntity(channelUsername),
+      EXTERNAL_CALL_TIMEOUT_MS,
+      'Resolve channel',
+    );
+    const messages: Api.Message[] = [];
+    let walked = 0;
+    let offsetId = 0;
+
+    while (walked < POSTS_MAX_MESSAGES) {
+      const limit = Math.min(POSTS_PAGE_SIZE, POSTS_MAX_MESSAGES - walked);
+      const page = await this.fetchPage(client, channel, { limit, offsetId });
+      walked += page.length;
+      messages.push(...page.filter((item) => isPostInWindow(item, windowStart)));
+      if (page.length < limit || page.some((item) => isOlderThan(item, windowStart))) {
+        return { messages, isTruncated: false };
+      }
+      offsetId = page[page.length - 1].id;
+    }
+
+    return {
+      messages,
+      isTruncated: await this.hasOlderInWindow(client, channel, offsetId, windowStart),
+    };
+  }
+
+  /** Probes one message past the ceiling so a window that ends exactly there is not flagged. */
+  private async hasOlderInWindow(
+    client: TelegramClient,
+    channel: Api.TypeInputPeer,
+    offsetId: number,
+    windowStart: number,
+  ): Promise<boolean> {
+    const [next] = await this.fetchPage(client, channel, { limit: 1, offsetId });
+    return next !== undefined && !isOlderThan(next, windowStart);
+  }
+
+  private async fetchPage(
+    client: TelegramClient,
+    channel: Api.TypeInputPeer,
+    page: { limit: number; offsetId: number },
+  ): Promise<Api.TypeMessage[]> {
+    const result = await withTimeout(
+      client.getMessages(channel, page),
+      EXTERNAL_CALL_TIMEOUT_MS,
+      'Get messages',
+    );
+    return [...result];
   }
 
   /**
    * Парсит сообщение в формат TelegramPost
    */
-  private parseMessage(message: any, channelUsername: string): TelegramPost | null {
-    if (!message) return null;
-
+  private parseMessage(message: Api.Message, channelUsername: string): TelegramPost {
     const media: TelegramMedia[] = [];
 
     if (message.media) {
@@ -441,45 +469,65 @@ export class TelegramService {
     return {
       id: message.id,
       text: message.message || '',
-      date: new Date(message.date * 1000),
+      date: new Date(message.date * MS_IN_SECOND),
       media,
       postUrl,
     };
   }
 
   /**
-   * Проверяет валидность сессии — возвращает статус без пробрасывания исключений
+   * Reports whether the session is usable: `failed` means the session itself is unknown or
+   * rejected by Telegram. A transport failure or flood wait is not a verdict on the session
+   * and is thrown as the mapped HTTP exception instead.
    */
   async checkSession(sessionString: string): Promise<{ status: 'success' | 'failed' }> {
     try {
-      const client = await this.getClient(sessionString);
-      if (!client.connected) {
-        await client.connect();
-      }
-      await client.invoke(new Api.users.GetUsers({ id: [new Api.InputUserSelf()] }));
+      const client = await this.getConnectedClient(sessionString);
+      await withTimeout(
+        client.invoke(new Api.users.GetUsers({ id: [new Api.InputUserSelf()] })),
+        EXTERNAL_CALL_TIMEOUT_MS,
+        'Get self',
+      );
+      this.logger.log('Session check: success');
       return { status: 'success' };
-    } catch {
+    } catch (error: unknown) {
+      if (!isInvalidSessionError(error)) {
+        throw this.failWith('Session check', error);
+      }
+      await this.evictIfSessionInvalid(sessionString, error);
+      this.logger.log(`Session check: failed (${describeError(error)})`);
       return { status: 'failed' };
     }
+  }
+
+  /**
+   * Maps a failure to its HTTP exception and writes the single outcome line for the request:
+   * the operation, the status and a caller-safe error description, never the request payload.
+   */
+  private failWith(operation: string, error: unknown): HttpException {
+    const exception = toHttpException(error);
+    const line = `${operation} failed: ${exception.getStatus()} (${describeError(error)})`;
+    if (exception.getStatus() >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      this.logger.error(line);
+    } else {
+      this.logger.warn(line);
+    }
+    return exception;
   }
 
   /**
    * Отключает клиента
    */
   async disconnect(sessionString: string): Promise<void> {
-    const client = this.clients.get(sessionString);
-    if (client) {
-      await client.disconnect();
-      this.clients.delete(sessionString);
-    }
+    await this.clients.evict(sessionString);
     this.deleteSession(sessionString);
   }
 
   private ensureDataDir(): void {
     try {
       fs.mkdirSync(this.dataDir, { recursive: true });
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to create data directory:', error.message);
+    } catch (error: unknown) {
+      this.logger.error(`Failed to create data directory: ${describeError(error)}`);
     }
   }
 
@@ -498,8 +546,8 @@ export class TelegramService {
       const existing = this.loadAuthStates();
       existing.set(phoneNumber, { phoneCodeHash, createdAt });
       fs.writeFileSync(this.authStatesFile, JSON.stringify(Object.fromEntries(existing), null, 2));
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to save auth state:', error.message);
+    } catch (error: unknown) {
+      this.logger.error(`Failed to save auth state: ${describeError(error)}`);
     }
   }
 
@@ -508,8 +556,8 @@ export class TelegramService {
       const existing = this.loadAuthStates();
       existing.delete(phoneNumber);
       fs.writeFileSync(this.authStatesFile, JSON.stringify(Object.fromEntries(existing), null, 2));
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to delete auth state:', error.message);
+    } catch (error: unknown) {
+      this.logger.error(`Failed to delete auth state: ${describeError(error)}`);
     }
   }
 
@@ -527,8 +575,8 @@ export class TelegramService {
       const existing = this.loadSessions();
       existing.add(sessionString);
       fs.writeFileSync(this.sessionsFile, JSON.stringify(Array.from(existing), null, 2));
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to save session:', error.message);
+    } catch (error: unknown) {
+      this.logger.error(`Failed to save session: ${describeError(error)}`);
     }
   }
 
@@ -537,8 +585,27 @@ export class TelegramService {
       const existing = this.loadSessions();
       existing.delete(sessionString);
       fs.writeFileSync(this.sessionsFile, JSON.stringify(Array.from(existing), null, 2));
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to delete session:', error.message);
+    } catch (error: unknown) {
+      this.logger.error(`Failed to delete session: ${describeError(error)}`);
     }
+  }
+}
+
+/** A regular post (not a service message) dated inside the window. */
+function isPostInWindow(item: Api.TypeMessage, windowStart: number): item is Api.Message {
+  return item instanceof Api.Message && item.date >= windowStart;
+}
+
+/** True when the item is dated before the window; undated items never end the walk. */
+function isOlderThan(item: Api.TypeMessage, windowStart: number): boolean {
+  return 'date' in item && typeof item.date === 'number' && item.date < windowStart;
+}
+
+/** Tears a client down for good; `destroy` also stops the GramJS update loop that would reconnect. */
+async function releaseClient(client: TelegramClient): Promise<void> {
+  try {
+    await client.destroy();
+  } catch {
+    // The client is being dropped either way; a failed teardown leaves nothing to retry.
   }
 }

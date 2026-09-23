@@ -1,5 +1,8 @@
 [1.4.1] 23.09.2026
 
+- Service logs go through the NestJS Logger only: one outcome line per request, no phone numbers or session strings, console banned by ESLint in src
+- Channel posts are walked page by page up to POSTS_MAX_MESSAGES and the response reports isTruncated; Telegram failures map to 401, 404, 400, 429, 502, 503
+- Telegram client cache bounded by SESSION_CACHE_MAX_ENTRIES with idle eviction; evicted and shut-down clients are destroyed, GramJS options set explicitly
 - Session string moved from the query string into the x-session-string header
 - Request DTOs for channel posts, and the 2FA password accepted only with a code
 - Rate limits: 60 requests per minute per API key and 5 auth requests per hour per phone number

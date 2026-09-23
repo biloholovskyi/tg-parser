@@ -8,6 +8,13 @@ metadata:
 Audit log for this agent. Newest first. Reports live in `docs/reviews/security-audit-YYYY-MM-DD.md`
 (append a section when the file for that date already exists).
 
+- 2026-09-23 — block-03-05-telegram-service (uncommitted diff) → `docs/reviews/block-03-05-security-audit.md`
+  (caller-chosen path, not the dated file). Closed: session-prefix logging, raw MTProto text in bodies,
+  phone numbers in logs. New open: M1 error classification by message substring (GramJS echoes the
+  channel username, so usernames like invalid-session codes spoof 401/429/503 + evict); M2 `*_FLOOD`
+  codes fall to 502; L1 service 429 lacks Retry-After; L2 PHONE_NUMBER_BANNED oracle. Still carried:
+  file store (C1), unbounded pending-auth map (H1), wrong code kills auth state (extra SMS).
+
 - 2026-09-23 — block-02-api-perimeter audit → `docs/reviews/security-audit-2026-09-23.md`.
   Scope: the three `APP_GUARD` guards, rate-limit store, header readers, route/metadata decorators,
   `api-keys.config.ts`, controller and DTOs, `docs/testing/` artifacts.

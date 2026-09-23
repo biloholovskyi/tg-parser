@@ -49,6 +49,37 @@ Setup facts that cost a debug cycle each when writing specs here.
    state. Reimplement the old algorithm as a throwaway Node script in the session scratchpad and
    check that the new assertions flip, instead of editing the production file to re-break it.
 
+8. `TelegramService` can be unit-tested with no DI module: `new TelegramService()` after
+   `jest.mock('telegram')` (a fake class that pushes itself into a `mockCreatedClients` array),
+   `telegram/sessions`, `telegram/tl` (plain request classes), `telegram/Password`,
+   `../config/telegram.config`, and `fs` as `{ ...jest.requireActual('fs'), mkdirSync, existsSync: () => false,
+   readFileSync, writeFileSync }` so the file-backed store never touches `data/`. The constructor starts
+   two `unref`'d intervals, so use fake timers and call `onModuleDestroy()` in `afterEach`.
+
+9. `expect(p).rejects.toThrow(new XException(msg))` fails here for mapped Telegram errors: this Jest
+   version compares the `cause` too, and `toHttpException` always sets one. Assert `toBeInstanceOf`
+   plus `.message` instead (a small `expectHttpError` helper in `telegram.service.spec.ts`).
+
+10. The service filters with `instanceof Api.Message`. In the `telegram/tl` mock, make `Message` and
+    `MessageService` real classes, then get them in the spec via
+    `jest.requireMock('telegram/tl').Api` — top-level classes referenced from the factory hit the TDZ
+    because the factory runs when the hoisted service import is required.
+
+11. Since the console -> Logger switch, assert output with `jest.spyOn(Logger.prototype, level)`; it also
+    catches module-level `new Logger('X')` instances (e.g. `telegram.config.ts`), so no module reset is needed.
+    For "one line per request" assertions, clear the six-level spies after the arrange phase (auth
+    itself logs) and count calls across all levels, not just `log`.
+
+12. Fake Telegram RPC failures must carry the exact MTProto code in an `errorMessage` property (an
+    `rpcError(code)` helper: `Object.assign(new Error(...), { errorMessage: code })`). Since the audit fix
+    for block-03-05, `telegram-errors.ts` classifies only by that property; a plain `new Error('... CODE')`
+    silently maps to 502. `SESSION_PASSWORD_NEEDED` is the exception: the service still checks it in
+    `error.message`, which `rpcError` also satisfies.
+
+13. To test the file-backed store end to end, back the `fs` mock with an in-memory `Map<path, content>`
+    (`existsSync`/`readFileSync`/`writeFileSync` implementations) in a nested `beforeEach`, and restore the
+    default implementations in `afterEach` — `jest.restoreAllMocks()` does not reset `jest.fn` implementations.
+
 **Why:** all of these produce failures that look like production bugs (env "not absent", a type error
 on a correct-looking call, a test that passes alone and fails in a suite) rather than test-harness
 problems.

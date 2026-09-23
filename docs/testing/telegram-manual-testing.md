@@ -80,7 +80,28 @@
 | A3 | `POST /telegram/auth` с номером, кодом и паролем при включённой двухфакторной защите | 200, `sessionString` |
 | A4 | `GET /telegram/me` с заголовком `x-session-string` | 200, `{"status":"success"}` |
 | A5 | `GET /telegram/me` без заголовка сессии | 200, `{"status":"failed"}` |
-| A6 | `GET /telegram/channel/{channel}/posts?hoursBack=24` с заголовком сессии | 200, список постов за период |
+| A6 | `GET /telegram/channel/{channel}/posts?hoursBack=24` с заголовком сессии | 200, список постов за период, `isTruncated: false` |
+| A7 | `GET /telegram/channel/{busy-channel}/posts?hoursBack=720` для канала, где за окно больше 1000 сообщений | 200, ровно столько постов, сколько вошло в потолок POSTS_MAX_MESSAGES, `isTruncated: true` |
+| A8 | То же, что A7, для канала, где за окно меньше 1000 сообщений | 200, все посты окна, `isTruncated: false` |
+
+### Ошибки Telegram
+
+| № | Запрос | Ожидаемый результат |
+|---|--------|---------------------|
+| E1 | `GET /telegram/me` с выдуманной строкой сессии | 200, `{"status":"failed"}` |
+| E2 | `GET /telegram/me` с сессией, завершённой в настройках Telegram («Завершить сеанс») | 200, `{"status":"failed"}`; повторный запрос тоже `failed`, клиент вытеснен |
+| E3 | `GET /telegram/me` при недоступном Telegram (сеть отключена) | 503, `Telegram is unreachable, retry later` |
+| E4 | `GET /telegram/channel/{channel}/posts` с выдуманной строкой сессии | 401, `Session is invalid or revoked, authenticate again` (то же сообщение, что для отозванной сессии) |
+| E5 | `GET /telegram/channel/{channel}/posts` с отозванной сессией | 401, `Session is invalid or revoked, authenticate again` |
+| E6 | `GET /telegram/channel/{nonexistent}/posts` | 404, `Channel not found or not accessible to this account` |
+| E7 | `GET /telegram/channel/{private-channel}/posts`, аккаунт не участник | 404, то же сообщение |
+| E8 | `POST /telegram/auth` с неверным кодом | 400, `The phone code is invalid` |
+| E9 | `POST /telegram/auth` с кодом после истечения срока | 400, `The phone code has expired, request a new one` |
+| E10 | `POST /telegram/auth` с неверным паролем 2FA | 400, `The 2FA password is wrong` |
+| E11 | `POST /telegram/auth` с кодом без предварительного шага 1 | 400, `Request a code first by sending phoneNumber without a code` |
+| E12 | Флуд-вейт от Telegram дольше FLOOD_SLEEP_THRESHOLD_S (частые шаги 1 с одним номером) | 429, поле `retryAfterSeconds` равно ожиданию, запрошенному Telegram; ответ приходит сразу, без ожидания |
+| E13 | Любой запрос, кроме health, без `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | 500, `Telegram API credentials are not configured` |
+| E14 | Любая ошибка из E1–E13 | в теле ответа нет текста MTProto-ошибки и стека |
 
 ## Устойчивость процесса
 

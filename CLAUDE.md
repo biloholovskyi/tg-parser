@@ -41,16 +41,20 @@ TelegramController (REST) → TelegramService (GramJS logic) → Telegram MTProt
 
 - `GET /telegram/health` — liveness probe and the Railway health check target
 - `POST /telegram/auth` — multi-step auth: phone, SMS code, optional 2FA password; returns a `sessionString`
-- `GET /telegram/me` — session validity and account info; the `sessionString` travels in the `x-session-string` header
-- `GET /telegram/channel/:channelUsername/posts` — time-filtered posts; the `sessionString` travels in the `x-session-string` header, never in the URL
+- `GET /telegram/me` — session validity check, `{ status: 'success' | 'failed' }` (`failed` only when the session is missing, unknown or rejected; transport failure is 503, flood wait 429); the `sessionString` travels in the `x-session-string` header
+- `GET /telegram/channel/:channelUsername/posts` — time-filtered posts, `{ posts, count, isTruncated }`, walk capped at `POSTS_MAX_MESSAGES`; the `sessionString` travels in the `x-session-string` header, never in the URL
 
 Every route except the health probe requires an `x-api-key` header and is rate limited.
 
-Session model: `TelegramClient` instances are cached in an in-memory `Map<sessionString, TelegramClient>`. Everything is lost on process restart, and the cache is per-process, so horizontal scaling breaks session affinity. The cache is bounded and idle clients are evicted and disconnected, because every connected client pings Telegram continuously. Details: @.claude/rules/architecture.md and @.claude/rules/runtime-resources.md.
+Session model: `TelegramClient` instances are cached in memory in a `SessionClientCache` (`src/telegram/utils/session-client-cache.ts`, a `Map` keyed by `sessionString`) owned by `TelegramService`. Everything is lost on process restart, and the cache is per-process, so horizontal scaling breaks session affinity. The cache is bounded (least recently used entry evicted at the ceiling) and idle clients are swept out; every eviction calls `destroy()` on the client, because every connected client pings Telegram continuously. Details: @.claude/rules/architecture.md and @.claude/rules/runtime-resources.md.
 
 Key source files:
 
-- [src/telegram/telegram.service.ts](src/telegram/telegram.service.ts) — GramJS logic: auth flow, client caching, message iteration and filtering
+- [src/telegram/telegram.service.ts](src/telegram/telegram.service.ts) — GramJS logic: auth flow, client creation and options, paged message walk and filtering
+- [src/telegram/constants.ts](src/telegram/constants.ts) — cache ceilings and TTLs, timeouts, GramJS client options, walk limits, MTProto error-code lists
+- [src/telegram/utils/session-client-cache.ts](src/telegram/utils/session-client-cache.ts) — bounded, idle-swept client cache; eviction releases the client
+- [src/telegram/utils/telegram-errors.ts](src/telegram/utils/telegram-errors.ts) — maps Telegram failures to HTTP exceptions and log-safe error descriptions
+- [src/telegram/utils/with-timeout.ts](src/telegram/utils/with-timeout.ts) — per-call timeout whose timer is always cleared
 - [src/telegram/telegram.controller.ts](src/telegram/telegram.controller.ts) — REST endpoints and request validation
 - [src/config/telegram.config.ts](src/config/telegram.config.ts) — loads `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`
 - [src/config/cors.config.ts](src/config/cors.config.ts) — loads the `CORS_ALLOWED_ORIGINS` allowlist
@@ -60,7 +64,7 @@ Key source files:
 - [src/shared/utils/rate-limit-store.ts](src/shared/utils/rate-limit-store.ts) — bounded fixed-window counters
 - [src/shared/utils/http-pipeline.ts](src/shared/utils/http-pipeline.ts) — body-size limit, global `ValidationPipe`, CORS options; called from `src/main.ts`
 - [src/shared/utils/process-handlers.ts](src/shared/utils/process-handlers.ts) — process handlers and the single deliberate shutdown path
-- [src/telegram/interfaces/message.interface.ts](src/telegram/interfaces/message.interface.ts) — `TelegramPost` and `TelegramMedia` types
+- [src/telegram/interfaces/message.interface.ts](src/telegram/interfaces/message.interface.ts) — `TelegramPost`, `TelegramMedia` and `GetPostsResponse` types
 
 ## Quick Commands
 

@@ -18,7 +18,7 @@
 
 ## Целевая версия
 
-Уточняется пользователем перед стартом работ.
+1.4.1
 
 ## Высокорисковая поверхность
 
@@ -26,10 +26,10 @@
 
 ## Фазы
 
-- Phase 01 (todo) — жизненный цикл клиентов и ресурсы: [phase-01-client-lifecycle.md](phase-01-client-lifecycle.md)
-- Phase 02 (todo) — выборка постов и коды ответов: [phase-02-fetch-and-status-codes.md](phase-02-fetch-and-status-codes.md)
-- Phase 03 (todo) — логирование: [phase-03-logging.md](phase-03-logging.md)
-- Phase 04 (todo) — Finalize: [phase-04-finalize.md](phase-04-finalize.md)
+- Phase 01 (done) — жизненный цикл клиентов и ресурсы: [phase-01-client-lifecycle.md](phase-01-client-lifecycle.md)
+- Phase 02 (done) — выборка постов и коды ответов: [phase-02-fetch-and-status-codes.md](phase-02-fetch-and-status-codes.md)
+- Phase 03 (done) — логирование: [phase-03-logging.md](phase-03-logging.md)
+- Phase 04 (done) — Finalize: [phase-04-finalize.md](phase-04-finalize.md)
 
 ## Покрытие правил
 
@@ -50,3 +50,7 @@
 1. Проставить целевую версию.
 2. Подтвердить значения потолка кэша, TTL простоя и порога ожидания при флуд-вейте.
 3. Запустить Phase 01 — она закрывает жизненный цикл клиентов и идёт первой как самая рисковая.
+
+## Отчёт
+
+- [block-03-05-telegram-service-1.4.1-2026-09-23.md](../../reports/block-03-05-telegram-service-1.4.1-2026-09-23.md)
