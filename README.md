@@ -22,11 +22,12 @@
 ```env
 TELEGRAM_API_ID=твой_api_id
 TELEGRAM_API_HASH=твой_api_hash
-PORT=3000
+PORT=8080
 CORS_ALLOWED_ORIGINS=http://localhost:5173
+API_KEYS=первый_ключ,второй_ключ
 ```
 
-`PORT` необязателен: без него сервис слушает порт 8080. `CORS_ALLOWED_ORIGINS` — список разрешённых браузерных источников через запятую; пустое значение запрещает все браузерные источники, `*` игнорируется.
+`PORT` необязателен: без него сервис слушает порт 8080. `CORS_ALLOWED_ORIGINS` — список разрешённых браузерных источников через запятую; пустое значение запрещает все браузерные источники, `*` игнорируется. `API_KEYS` — ключи вызывающих сторон через запятую; пустое или незаданное значение закрывает все маршруты, кроме health-проверки.
 
 ### 3. Установка зависимостей
 
@@ -42,7 +43,7 @@ npm install
 npm run start:dev
 ```
 
-Сервер запустится на `http://localhost:3000`
+Сервер запустится на `http://localhost:8080`
 
 ### 5. Сборка для продакшна
 
@@ -60,8 +61,9 @@ npm run start:prod
 **Шаг 1: Отправка номера телефона**
 
 ```bash
-curl -X POST http://localhost:3000/telegram/auth \
+curl -X POST http://localhost:8080/telegram/auth \
   -H "Content-Type: application/json" \
+  -H "x-api-key: твой_ключ" \
   -d '{
     "phoneNumber": "+1234567890"
   }'
@@ -78,8 +80,9 @@ curl -X POST http://localhost:3000/telegram/auth \
 **Шаг 2: Отправка кода из SMS**
 
 ```bash
-curl -X POST http://localhost:3000/telegram/auth \
+curl -X POST http://localhost:8080/telegram/auth \
   -H "Content-Type: application/json" \
+  -H "x-api-key: твой_ключ" \
   -d '{
     "phoneNumber": "+1234567890",
     "phoneCode": "12345"
@@ -97,8 +100,9 @@ curl -X POST http://localhost:3000/telegram/auth \
 **Шаг 3 (опционально): Отправка 2FA пароля**
 
 ```bash
-curl -X POST http://localhost:3000/telegram/auth \
+curl -X POST http://localhost:8080/telegram/auth \
   -H "Content-Type: application/json" \
+  -H "x-api-key: твой_ключ" \
   -d '{
     "phoneNumber": "+1234567890",
     "phoneCode": "12345",
@@ -114,20 +118,45 @@ curl -X POST http://localhost:3000/telegram/auth \
 }
 ```
 
-**Сохрани `sessionString` - он нужен для всех остальных запросов!**
+**Сохрани `sessionString` - он нужен для всех остальных запросов!** Передавай его только заголовком `x-session-string`: это полномочия на весь аккаунт, а URL попадает в логи прокси и платформы.
+
+### Доступ к API
+
+Каждый маршрут, кроме `GET /telegram/health`, требует заголовок `x-api-key` со значением из `API_KEYS`. Без него или с чужим ключом ответ — 401.
+
+Действуют ограничения частоты: 60 запросов в минуту на ключ и 5 запросов в час на один номер телефона для `POST /telegram/auth`. При превышении приходит 429 с заголовком `Retry-After`.
+
+### GET /telegram/health
+
+Проверка живости. Единственный маршрут без ключа, отвечает `{"status":"ok"}` и ничего не знает о Telegram.
+
+### GET /telegram/me
+
+Проверяет, жива ли сессия. Строка сессии передаётся заголовком `x-session-string`.
+
+```bash
+curl http://localhost:8080/telegram/me \
+  -H "x-api-key: твой_ключ" \
+  -H "x-session-string: 1AaBbCcDd...твоя_сессия"
+```
+
+Ответ всегда 200: `{"status":"success"}` или `{"status":"failed"}`.
 
 ### GET /telegram/channel/:channelUsername/posts
 
 Получает посты канала за последние 24 часа.
 
 **Параметры:**
-- `channelUsername` - username канала (без @) или его ID
-- `sessionString` (query) - строка сессии из `/auth`
+- `channelUsername` (путь) - username канала, с `@` или без
+- `x-session-string` (заголовок) - строка сессии из `/auth`; в query-параметре она не принимается
+- `hoursBack` (query, необязательный) - глубина выборки в часах, от 1 до 720, по умолчанию 24
 
 **Пример:**
 
 ```bash
-curl "http://localhost:3000/telegram/channel/durov/posts?sessionString=1AaBbCcDd...твоя_сессия"
+curl "http://localhost:8080/telegram/channel/durov/posts?hoursBack=24" \
+  -H "x-api-key: твой_ключ" \
+  -H "x-session-string: 1AaBbCcDd...твоя_сессия"
 ```
 
 Ответ:
@@ -187,6 +216,8 @@ railway up
 В Railway Dashboard добавь переменные окружения:
 - `TELEGRAM_API_ID` - твой API ID
 - `TELEGRAM_API_HASH` - твой API Hash
+- `API_KEYS` - ключи вызывающих сторон через запятую; без них открыт только health
+- `CORS_ALLOWED_ORIGINS` - список браузерных источников через запятую
 - `PORT` - Railway автоматически установит
 
 После деплоя Railway предоставит публичный URL для твоего сервиса.
@@ -203,10 +234,18 @@ src/
 │   ├── telegram.controller.ts # REST endpoints
 │   ├── dto/
 │   │   ├── auth.dto.ts      # DTO авторизации
-│   │   └── messages.dto.ts  # DTO сообщений
+│   │   └── messages.dto.ts  # DTO запроса постов
 │   └── interfaces/
 │       └── message.interface.ts # Типы данных
+├── shared/
+│   ├── constants/            # Заголовки, лимиты, размер тела
+│   ├── decorators/           # Публичный маршрут, лимит по номеру, строка сессии
+│   ├── exceptions/           # 429 с Retry-After
+│   ├── guards/               # Ключ вызывающей стороны и рейт-лимиты
+│   └── utils/                # HTTP-конвейер, счётчики, чтение заголовков
 └── config/
+    ├── api-keys.config.ts    # Ключи вызывающих сторон
+    ├── cors.config.ts        # Список источников CORS
     └── telegram.config.ts    # Конфигурация API
 ```
 
@@ -232,8 +271,6 @@ src/
 - Поиск по сообщениям
 - Экспорт данных в различных форматах
 - Webhook-и для новых сообщений
-- Rate limiting
-- Аутентификация через API ключи
 
 ## 📄 Лицензия
 

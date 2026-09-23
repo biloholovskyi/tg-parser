@@ -13,3 +13,4 @@ Project-scoped memory for this agent. Record durable decisions, user feedback, a
 
 ## Reference
 - [Perimeter verification facts](reference_perimeter_verification_facts.md) — verified express/cors/Nest behaviour behind the CORS, body-limit and shutdown findings
+- [Recurring exposure patterns](reference_recurring_exposure_patterns.md) — where this repo leaks repeatedly, and the guard/pipe/APP_GUARD behaviour that decides if a control holds

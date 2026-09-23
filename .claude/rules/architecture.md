@@ -29,12 +29,12 @@ Controllers must be thin — delegate all logic to the service. Follow the patte
 ## Key Directories
 
 - `src/telegram/` — the single feature module: auth, session checks, channel post fetching
-- `src/config/` — env-backed configuration loaders (`telegram.config.ts`, `cors.config.ts`)
-- `src/shared/` — cross-cutting helpers: `constants/` (`http.constants.ts`), `utils/` (`http-pipeline.ts`, `process-handlers.ts`)
+- `src/config/` — env-backed configuration loaders (`telegram.config.ts`, `cors.config.ts`, `api-keys.config.ts`)
+- `src/shared/` — cross-cutting helpers: `constants/` (`http.constants.ts`, `rate-limit.constants.ts`), `utils/` (`http-pipeline.ts`, `process-handlers.ts`, `rate-limit-store.ts`, header readers), `guards/` (caller authentication and rate limits), `decorators/` (route markers and the session parameter), `exceptions/` (the 429 response)
 - `src/app.module.ts` — root module
 - `src/main.ts` — bootstrap: creates the app with `bodyParser: false`, calls `configureHttpPipeline`, registers process handlers and shutdown hooks, binds the port
 
-Cross-cutting helpers stay in `src/shared/` under `constants/`, `types/`, `utils/` rather than scattered into feature modules.
+Cross-cutting helpers stay in `src/shared/` under `constants/`, `types/`, `utils/`, `guards/`, `decorators/` and `exceptions/` rather than scattered into feature modules. The perimeter guards live there and are registered as `APP_GUARD` from `src/telegram/telegram.module.ts`.
 
 ## REST Surface
 
@@ -42,8 +42,8 @@ Base path `telegram`:
 
 - `GET /telegram/health` — liveness probe, also the Railway health check target
 - `POST /telegram/auth` — multi-step auth: phone number, then SMS code, then optional 2FA password; returns a `sessionString`
-- `GET /telegram/me` — session validity and current account info
-- `GET /telegram/channel/:channelUsername/posts` — time-filtered posts for a channel, authorized by `sessionString`
+- `GET /telegram/me` — session validity and current account info, credential in SESSION_HEADER
+- `GET /telegram/channel/:channelUsername/posts` — time-filtered posts for a channel, credential in SESSION_HEADER, window in `hoursBack`
 
 Contract changes to any of these are governed by `.claude/rules/api-contracts.md`.
 

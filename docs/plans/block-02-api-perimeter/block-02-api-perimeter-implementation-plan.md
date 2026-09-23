@@ -15,7 +15,7 @@
 
 ## Целевая версия
 
-Уточняется пользователем перед стартом работ.
+1.4.1
 
 ## Высокорисковая поверхность
 
@@ -23,10 +23,10 @@
 
 ## Фазы
 
-- Phase 01 (todo) — ключ доступа и гвард: [phase-01-api-key-guard.md](phase-01-api-key-guard.md)
-- Phase 02 (todo) — рейт-лимиты: [phase-02-rate-limits.md](phase-02-rate-limits.md)
-- Phase 03 (todo) — транспорт строки сессии и DTO: [phase-03-session-transport-dto.md](phase-03-session-transport-dto.md)
-- Phase 04 (todo) — Finalize: [phase-04-finalize.md](phase-04-finalize.md)
+- Phase 01 (done) — ключ доступа и гвард: [phase-01-api-key-guard.md](phase-01-api-key-guard.md) — гвард на всех маршрутах кроме health, lint/build/test зелёные
+- Phase 02 (done) — рейт-лимиты: [phase-02-rate-limits.md](phase-02-rate-limits.md) — общий лимит по ключу и лимит авторизации по номеру, lint/build/test зелёные
+- Phase 03 (done) — транспорт строки сессии и DTO: [phase-03-session-transport-dto.md](phase-03-session-transport-dto.md) — строка сессии в заголовке, DTO на все запросы, lint/build/test/e2e зелёные
+- Phase 04 (done) — Finalize: [phase-04-finalize.md](phase-04-finalize.md) — аудиты, дымовой прогон, синхронизация документации, версия 1.4.1, отчёт
 
 ## Покрытие правил
 
@@ -40,8 +40,13 @@
 
 План не трогает `src/main.ts` (блок 01) и внутренности `TelegramService` (блок 03-05). Регистрация гварда и ограничителя выполняется в `src/telegram/telegram.module.ts`.
 
+## Статус
+
+План завершён. Отчёт: [docs/reports/block-02-api-perimeter-1.4.1-2026-09-23.md](../../reports/block-02-api-perimeter-1.4.1-2026-09-23.md).
+
 ## Следующие действия
 
-1. Проставить целевую версию.
-2. Согласовать имена заголовков и способ выдачи ключей потребителям.
-3. Запустить Phase 01.
+1. Выдать ключи потребителям и задать `API_KEYS` на деплое до выката.
+2. Передать потребителям новый контракт: ключ в `x-api-key`, строка сессии в `x-session-string`.
+3. Решить по находке HIGH-1 аудита: общего потолка на `POST /telegram/auth` нет, один валидный ключ по-прежнему может заказать SMS на множество разных номеров.
+4. Ветка `r-1.4.0` не совпадает с версией 1.4.1 — переключение на `r-1.4.1` требует решения пользователя.

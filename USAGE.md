@@ -1,5 +1,7 @@
 # Руководство по использованию
 
+> Доступ: каждый маршрут, кроме `GET /telegram/health`, требует заголовок `x-api-key` со значением из переменной `API_KEYS`. Строка сессии передаётся только заголовком `x-session-string`. Действуют лимиты: 60 запросов в минуту на ключ и 5 запросов в час на номер телефона для `POST /telegram/auth`.
+
 ## Локальный запуск
 
 ### 1. Установка зависимостей
@@ -114,7 +116,9 @@ curl -X POST http://localhost:3000/telegram/auth \
 После авторизации используй sessionString для получения постов:
 
 ```bash
-curl "http://localhost:3000/telegram/channel/durov/posts?sessionString=1BVtsOKsBu7N..."
+curl "http://localhost:3000/telegram/channel/durov/posts" \
+  -H "x-api-key: твой_ключ" \
+  -H "x-session-string: 1BVtsOKsBu7N..."
 ```
 
 Параметры:
@@ -179,9 +183,10 @@ async function authenticate(phoneNumber, phoneCode, password) {
 }
 
 // Получение постов
-async function getPosts(channelUsername, sessionString) {
+async function getPosts(channelUsername, sessionString, apiKey) {
   const response = await fetch(
-    `http://localhost:3000/telegram/channel/${channelUsername}/posts?sessionString=${sessionString}`
+    `http://localhost:3000/telegram/channel/${channelUsername}/posts`,
+    { headers: { 'x-api-key': apiKey, 'x-session-string': sessionString } }
   );
   
   return await response.json();
@@ -191,7 +196,7 @@ async function getPosts(channelUsername, sessionString) {
 const auth = await authenticate('+79991234567', '12345');
 console.log(auth.sessionString);
 
-const posts = await getPosts('durov', auth.sessionString);
+const posts = await getPosts('durov', auth.sessionString, apiKey);
 console.log(posts);
 ```
 

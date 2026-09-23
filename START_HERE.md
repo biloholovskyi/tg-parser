@@ -1,5 +1,7 @@
 # 🎯 НАЧНИ ОТСЮДА
 
+> Доступ: каждый маршрут, кроме `GET /telegram/health`, требует заголовок `x-api-key` со значением из переменной `API_KEYS`. Строка сессии передаётся только заголовком `x-session-string`. Действуют лимиты: 60 запросов в минуту на ключ и 5 запросов в час на номер телефона для `POST /telegram/auth`.
+
 ## Что это?
 
 Telegram Parser Service - сервис на NestJS для парсинга открытых и закрытых Telegram каналов через твой личный аккаунт.
@@ -132,7 +134,9 @@ curl -X POST http://localhost:3000/telegram/auth \
 
 **Пример:**
 ```bash
-curl "http://localhost:3000/telegram/channel/durov/posts?sessionString=YOUR_SESSION"
+curl "http://localhost:3000/telegram/channel/durov/posts" \
+  -H "x-api-key: твой_ключ" \
+  -H "x-session-string: YOUR_SESSION"
 ```
 
 ---

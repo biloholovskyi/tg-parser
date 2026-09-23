@@ -10,6 +10,7 @@ Project-scoped memory for this agent. Record durable decisions, user feedback, a
 
 ## Project
 - [Diff window and index quirks](project_diff_window_quirks.md) — как мерить Affected files: untracked файлы и чужие строки в окне; формат строки индекса
+- [Report structure conventions](project_report_structure_conventions.md) — устоявшаяся форма отчёта: шапка, доп. разделы, как показывать фазу Finalize в статусе todo
 
 ## Reference
 - (none yet)

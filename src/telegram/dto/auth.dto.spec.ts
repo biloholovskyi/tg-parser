@@ -149,6 +149,68 @@ describe('CompleteAuthDto', () => {
     expect(actualCompleteErrors.map((error) => error.property)).toEqual(['phoneNumber']);
   });
 
+  describe('2FA password step ordering', () => {
+    it('accepts a password sent together with a phone code', async () => {
+      const inputPlain = {
+        phoneNumber: INPUT_FAKE_PHONE_NUMBER,
+        phoneCode: INPUT_FAKE_PHONE_CODE,
+        password: INPUT_FAKE_PASSWORD,
+      };
+
+      const actualErrors = await validateCompleteAuth(inputPlain);
+
+      expect(actualErrors).toHaveLength(0);
+    });
+
+    it('rejects a password sent without a phone code', async () => {
+      const inputPlain = {
+        phoneNumber: INPUT_FAKE_PHONE_NUMBER,
+        password: INPUT_FAKE_PASSWORD,
+      };
+
+      const actualErrors = await validateCompleteAuth(inputPlain);
+
+      const expectedError = actualErrors.find((error) => error.property === 'password');
+      expect(expectedError).toBeDefined();
+      expect(expectedError.constraints).toHaveProperty('passwordRequiresPhoneCode');
+    });
+
+    it('rejects a password sent with a blank phone code, which counts as absent', async () => {
+      const inputPlain = {
+        phoneNumber: INPUT_FAKE_PHONE_NUMBER,
+        phoneCode: INPUT_BLANK_VALUE,
+        password: INPUT_FAKE_PASSWORD,
+      };
+
+      const actualErrors = await validateCompleteAuth(inputPlain);
+
+      const expectedError = actualErrors.find((error) => error.property === 'password');
+      expect(expectedError).toBeDefined();
+      expect(expectedError.constraints).toHaveProperty('passwordRequiresPhoneCode');
+    });
+
+    it('accepts a blank password without a phone code, because a blank password is absent', async () => {
+      const inputPlain = {
+        phoneNumber: INPUT_FAKE_PHONE_NUMBER,
+        password: INPUT_BLANK_VALUE,
+      };
+
+      const actualDto = buildCompleteAuthDto(inputPlain);
+      const actualErrors = await validateCompleteAuth(inputPlain);
+
+      expect(actualDto.password).toBeUndefined();
+      expect(actualErrors).toHaveLength(0);
+    });
+
+    it('accepts an empty-string password without a phone code', async () => {
+      const inputPlain = { phoneNumber: INPUT_FAKE_PHONE_NUMBER, password: '' };
+
+      const actualErrors = await validateCompleteAuth(inputPlain);
+
+      expect(actualErrors).toHaveLength(0);
+    });
+  });
+
   describe('blank optional step fields', () => {
     it('accepts a caller that sends every field with an empty phone code and password', async () => {
       const inputPlain = { phoneNumber: INPUT_FAKE_PHONE_NUMBER, phoneCode: '', password: '' };

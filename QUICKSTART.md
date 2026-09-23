@@ -1,5 +1,7 @@
 # ⚡ Быстрый старт
 
+> Доступ: каждый маршрут, кроме `GET /telegram/health`, требует заголовок `x-api-key` со значением из переменной `API_KEYS`. Строка сессии передаётся только заголовком `x-session-string`. Действуют лимиты: 60 запросов в минуту на ключ и 5 запросов в час на номер телефона для `POST /telegram/auth`.
+
 ## 1. Получи Telegram API credentials (5 минут)
 
 1. Открой https://my.telegram.org
@@ -59,7 +61,9 @@ curl -X POST http://localhost:3000/telegram/auth \
 ## 5. Получи посты (1 минута)
 
 ```bash
-curl "http://localhost:3000/telegram/channel/durov/posts?sessionString=ТВОЯ_СЕССИЯ"
+curl "http://localhost:3000/telegram/channel/durov/posts" \
+  -H "x-api-key: твой_ключ" \
+  -H "x-session-string: ТВОЯ_СЕССИЯ"
 ```
 
 ## ✅ Готово!

@@ -5,16 +5,23 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { API_KEYS_ENV_VAR } from '../src/config/api-keys.config';
+import { API_KEY_HEADER, SESSION_HEADER } from '../src/shared/constants/http.constants';
 import { configureHttpPipeline } from '../src/shared/utils/http-pipeline';
 import { TelegramService } from '../src/telegram/telegram.service';
 
 const HEALTH_ROUTE = '/telegram/health';
+const ME_ROUTE = '/telegram/me';
 const ROOT_ROUTE = '/';
 const LEGACY_HEALTH_ROUTE = '/health';
 const EXPECTED_HEALTH_BODY = { status: 'ok' };
 
 const HTTP_OK = 200;
+const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
+
+const INPUT_FAKE_API_KEY = 'fake-e2e-api-key';
+const INPUT_FAKE_SESSION_STRING = 'fake-session-string';
 
 const RAILWAY_CONFIG_FILE = join(__dirname, '..', 'railway.toml');
 const HEALTHCHECK_PATH_PATTERN = /^\s*healthcheck_path\s*=\s*"([^"]+)"/m;
@@ -50,7 +57,9 @@ describe('health probe (e2e)', () => {
     for (const envVar of TELEGRAM_ENV_VARS) {
       originalEnvValues.set(envVar, process.env[envVar]);
     }
+    originalEnvValues.set(API_KEYS_ENV_VAR, process.env[API_KEYS_ENV_VAR]);
     deleteTelegramEnvVars();
+    process.env[API_KEYS_ENV_VAR] = INPUT_FAKE_API_KEY;
 
     const moduleRef: TestingModule = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(TelegramService)
@@ -78,8 +87,9 @@ describe('health probe (e2e)', () => {
   });
 
   beforeEach(() => {
-    // ConfigModule reads the local .env during bootstrap, so clear the variables again.
+    // ConfigModule reads the local .env during bootstrap, so restate the variables again.
     deleteTelegramEnvVars();
+    process.env[API_KEYS_ENV_VAR] = INPUT_FAKE_API_KEY;
 
     for (const mockMethod of Object.values(mockTelegramService)) {
       mockMethod.mockReset();
@@ -125,5 +135,57 @@ describe('health probe (e2e)', () => {
     for (const mockMethod of Object.values(mockTelegramService)) {
       expect(mockMethod).not.toHaveBeenCalled();
     }
+  });
+
+  it('answers the health route without a caller key while a caller key is configured', async () => {
+    expect(process.env[API_KEYS_ENV_VAR]).toBe(INPUT_FAKE_API_KEY);
+
+    const actualResponse = await request(app.getHttpServer()).get(HEALTH_ROUTE);
+
+    expect(actualResponse.status).toBe(HTTP_OK);
+    expect(actualResponse.body).toEqual(EXPECTED_HEALTH_BODY);
+  });
+
+  it('rejects an authenticated route carrying no caller key before the service is called', async () => {
+    const actualResponse = await request(app.getHttpServer())
+      .get(ME_ROUTE)
+      .set(SESSION_HEADER, INPUT_FAKE_SESSION_STRING);
+
+    expect(actualResponse.status).toBe(HTTP_UNAUTHORIZED);
+    expect(mockTelegramService.checkSession).not.toHaveBeenCalled();
+  });
+
+  it('lets an authenticated route through once the caller key is present', async () => {
+    const expectedBody = { status: 'success' };
+    mockTelegramService.checkSession.mockResolvedValue(expectedBody);
+
+    const actualResponse = await request(app.getHttpServer())
+      .get(ME_ROUTE)
+      .set(API_KEY_HEADER, INPUT_FAKE_API_KEY)
+      .set(SESSION_HEADER, INPUT_FAKE_SESSION_STRING);
+
+    expect(actualResponse.status).toBe(HTTP_OK);
+    expect(actualResponse.body).toEqual(expectedBody);
+    expect(mockTelegramService.checkSession).toHaveBeenCalledWith(INPUT_FAKE_SESSION_STRING);
+  });
+
+  it('reports a failed session when the session header is absent', async () => {
+    const actualResponse = await request(app.getHttpServer())
+      .get(ME_ROUTE)
+      .set(API_KEY_HEADER, INPUT_FAKE_API_KEY);
+
+    expect(actualResponse.status).toBe(HTTP_OK);
+    expect(actualResponse.body).toEqual({ status: 'failed' });
+    expect(mockTelegramService.checkSession).not.toHaveBeenCalled();
+  });
+
+  it('ignores a credential offered in the query string, which no longer authorizes the route', async () => {
+    const actualResponse = await request(app.getHttpServer())
+      .get(ME_ROUTE)
+      .set(API_KEY_HEADER, INPUT_FAKE_API_KEY)
+      .query({ sessionString: INPUT_FAKE_SESSION_STRING });
+
+    expect(actualResponse.body).toEqual({ status: 'failed' });
+    expect(mockTelegramService.checkSession).not.toHaveBeenCalled();
   });
 });

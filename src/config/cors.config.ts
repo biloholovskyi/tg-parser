@@ -1,11 +1,12 @@
 import { Logger } from '@nestjs/common';
+import { API_KEY_HEADER, SESSION_HEADER } from '../shared/constants/http.constants';
 
 const ORIGIN_SEPARATOR = ',';
 const WILDCARD_ORIGIN = '*';
 
 export const CORS_ORIGINS_ENV_VAR = 'CORS_ALLOWED_ORIGINS';
 export const CORS_ALLOWED_METHODS = ['GET', 'POST', 'OPTIONS'] as const;
-export const CORS_ALLOWED_HEADERS = ['Content-Type', 'x-api-key', 'x-session-string'] as const;
+export const CORS_ALLOWED_HEADERS = ['Content-Type', API_KEY_HEADER, SESSION_HEADER] as const;
 export const CORS_ALLOW_CREDENTIALS = false;
 
 export interface CorsConfig {

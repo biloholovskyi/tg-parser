@@ -114,7 +114,7 @@ TypeScript типы для типобезопасности.
    ↓
 6. Получает sessionString
    ↓
-7. Клиент → GET /channel/:username/posts?sessionString=...
+7. Клиент → GET /channel/:username/posts (x-api-key + x-session-string)
    ↓
 8. TelegramController.getChannelPosts()
    ↓

@@ -9,9 +9,15 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { PhoneRateLimited } from '../shared/decorators/phone-rate-limited.decorator';
+import { PublicRoute } from '../shared/decorators/public-route.decorator';
+import { SessionString } from '../shared/decorators/session-string.decorator';
 import { AuthResponseDto, CompleteAuthDto } from './dto/auth.dto';
+import { ChannelPostsParamsDto, GetPostsQueryDto, HOURS_BACK_DEFAULT } from './dto/messages.dto';
 import { GetPostsResponse } from './interfaces/message.interface';
 import { TelegramService } from './telegram.service';
+
+const MISSING_SESSION_MESSAGE = 'A session string is required in the x-session-string header';
 
 @Controller('telegram')
 export class TelegramController {
@@ -22,6 +28,7 @@ export class TelegramController {
    * The only health probe: constant payload, no Telegram and no credential access.
    * Matches healthcheck_path in railway.toml.
    */
+  @PublicRoute()
   @Get('health')
   @HttpCode(HttpStatus.OK)
   health(): { status: 'ok' } {
@@ -37,65 +44,54 @@ export class TelegramController {
    * 2. Отправить phoneNumber + phoneCode - получишь sessionString или needsPassword: true
    * 3. Если нужен пароль, отправь phoneNumber + phoneCode + password
    */
+  @PhoneRateLimited()
   @Post('auth')
   @HttpCode(HttpStatus.OK)
   async authenticate(@Body() authDto: CompleteAuthDto): Promise<AuthResponseDto> {
     const { phoneNumber, phoneCode, password } = authDto;
-
-    if (!phoneNumber) {
-      return {
-        message: 'phoneNumber is required',
-      };
-    }
 
     return await this.telegramService.authenticate(phoneNumber, phoneCode, password);
   }
 
   /**
    * GET /telegram/me
-   * Проверяет валидность сессии — всегда 200, status: success | failed
+   * Проверяет валидность сессии — всегда 200, status: success | failed.
+   * Строка сессии приходит заголовком x-session-string.
    */
   @Get('me')
   @HttpCode(HttpStatus.OK)
   async checkSession(
-    @Query('sessionString') sessionString?: string,
+    @SessionString() sessionString: string,
   ): Promise<{ status: 'success' | 'failed' }> {
     if (!sessionString) {
       return { status: 'failed' };
     }
-    const fixedSessionString = sessionString.replace(/ /g, '+');
-    return await this.telegramService.checkSession(fixedSessionString);
+
+    return await this.telegramService.checkSession(sessionString);
   }
 
   /**
    * GET /telegram/channel/:channelUsername/posts
-   * Получает посты канала за указанный период
+   * Получает посты канала за указанный период.
    *
-   * Query params:
-   * - sessionString: строка сессии из /auth
-   * - hoursBack: количество часов назад (по умолчанию 24, максимум 720)
+   * Строка сессии приходит заголовком x-session-string, период — query-параметром hoursBack.
    */
   @Get('channel/:channelUsername/posts')
   async getChannelPosts(
-    @Param('channelUsername') channelUsername: string,
-    @Query('sessionString') sessionString?: string,
-    @Query('hoursBack') hoursBack?: string,
+    @Param() params: ChannelPostsParamsDto,
+    @Query() query: GetPostsQueryDto,
+    @SessionString() sessionString: string,
   ): Promise<GetPostsResponse> {
     if (!sessionString) {
-      throw new BadRequestException('sessionString query parameter is required');
+      throw new BadRequestException(MISSING_SESSION_MESSAGE);
     }
 
-    // Fix URL encoding: replace spaces back to + (spaces are decoded + in URL)
-    const fixedSessionString = sessionString.replace(/ /g, '+');
+    const hoursBack = query.hoursBack ?? HOURS_BACK_DEFAULT;
 
-    // Парсим hoursBack или используем значение по умолчанию
-    const hours = hoursBack ? parseInt(hoursBack, 10) : 24;
-
-    // Валидация
-    if (isNaN(hours) || hours < 1 || hours > 720) {
-      throw new BadRequestException('hoursBack must be a number between 1 and 720');
-    }
-
-    return await this.telegramService.getChannelPosts(channelUsername, fixedSessionString, hours);
+    return await this.telegramService.getChannelPosts(
+      params.channelUsername,
+      sessionString,
+      hoursBack,
+    );
   }
 }

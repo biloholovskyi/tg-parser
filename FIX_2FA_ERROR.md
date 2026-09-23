@@ -1,5 +1,7 @@
 # 🔧 Исправление ошибки 2FA авторизации
 
+> Доступ: каждый маршрут, кроме `GET /telegram/health`, требует заголовок `x-api-key` со значением из переменной `API_KEYS`. Строка сессии передаётся только заголовком `x-session-string`. Действуют лимиты: 60 запросов в минуту на ключ и 5 запросов в час на номер телефона для `POST /telegram/auth`.
+
 ## Проблема
 При попытке войти с 2FA паролем получал ошибку:
 ```
@@ -158,7 +160,9 @@ curl -X POST http://localhost:3002/telegram/auth \
 Сохрани `sessionString` из ответа и используй для получения постов:
 
 ```bash
-curl "http://localhost:3002/telegram/channel/durov/posts?sessionString=твоя_сессия"
+curl "http://localhost:3002/telegram/channel/durov/posts" \
+  -H "x-api-key: твой_ключ" \
+  -H "x-session-string: твоя_сессия"
 ```
 
 ---

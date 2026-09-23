@@ -1,13 +1,17 @@
 {
   "info": {
     "name": "tg-parser - telegram",
-    "description": "REST-поверхность tg-parser после блока 01: health, валидация тела, ограничение размера тела, список источников CORS, авторизация и посты канала. sessionString и номер телефона хранятся только в переменных коллекции и никогда не коммитятся.",
+    "description": "REST-поверхность tg-parser после блока 02: health, периметр доступа по ключу вызывающей стороны, рейт-лимиты, многошаговая авторизация, посты канала, список источников CORS. Ключ передаётся заголовком x-api-key, строка сессии — заголовком x-session-string; оба значения хранятся только в переменных коллекции и не коммитятся.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
       "value": "http://127.0.0.1:8080"
+    },
+    {
+      "key": "apiKey",
+      "value": ""
     },
     {
       "key": "allowedOrigin",
@@ -111,6 +115,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
               }
             ],
             "url": {
@@ -144,6 +152,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
               }
             ],
             "url": {
@@ -192,6 +204,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
               }
             ],
             "url": {
@@ -221,21 +237,24 @@
           "name": "A4 check session",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
             "url": {
-              "raw": "{{baseUrl}}/telegram/me?sessionString={{sessionString}}",
+              "raw": "{{baseUrl}}/telegram/me",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "telegram",
                 "me"
-              ],
-              "query": [
-                {
-                  "key": "sessionString",
-                  "value": "{{sessionString}}"
-                }
               ]
             },
             "description": "200 и status: success. Транспорт через query временный, исправляется в блоке 02."
@@ -246,7 +265,12 @@
           "name": "A5 check session without credential",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/telegram/me",
               "host": [
@@ -265,9 +289,18 @@
           "name": "A6 channel posts",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
             "url": {
-              "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts?sessionString={{sessionString}}&hoursBack=24",
+              "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts?hoursBack=24",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -278,10 +311,6 @@
                 "posts"
               ],
               "query": [
-                {
-                  "key": "sessionString",
-                  "value": "{{sessionString}}"
-                },
                 {
                   "key": "hoursBack",
                   "value": "24"
@@ -305,6 +334,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
               }
             ],
             "url": {
@@ -338,6 +371,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
               }
             ],
             "url": {
@@ -371,6 +408,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
               }
             ],
             "url": {
@@ -404,6 +445,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
               }
             ],
             "url": {
@@ -437,6 +482,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
               }
             ],
             "url": {
@@ -478,9 +527,18 @@
           "name": "V6 hoursBack out of range",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
             "url": {
-              "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts?sessionString={{sessionString}}&hoursBack=0",
+              "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts?hoursBack=0",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -491,10 +549,6 @@
                 "posts"
               ],
               "query": [
-                {
-                  "key": "sessionString",
-                  "value": "{{sessionString}}"
-                },
                 {
                   "key": "hoursBack",
                   "value": "0"
@@ -509,7 +563,12 @@
           "name": "V7 posts without credential",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts",
               "host": [
@@ -525,6 +584,219 @@
             "description": "400: sessionString обязателен."
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "perimeter",
+      "item": [
+        {
+          "name": "P1 no caller key",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
+            "description": "Ожидается 401 и одинаковое сообщение независимо от причины отказа.",
+            "url": {
+              "raw": "{{baseUrl}}/telegram/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "P2 unknown caller key",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "definitely-not-a-configured-key"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
+            "description": "Ожидается 401 с тем же сообщением, что и P1: ответ не говорит, существует ли такой ключ.",
+            "url": {
+              "raw": "{{baseUrl}}/telegram/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "P3 health stays open",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Ожидается 200 без заголовка x-api-key: health остаётся публичным.",
+            "url": {
+              "raw": "{{baseUrl}}/telegram/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "P4 session string in the query is refused",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
+            "description": "Ожидается 400: неизвестный query-параметр отклоняется, строка сессии в URL не обслуживается. Заглушка вместо реальной строки сессии: запрос заведомо отклоняется, а credential не должен попадать в URL даже при ручной проверке.",
+            "url": {
+              "raw": "{{baseUrl}}/telegram/channel/{{channelUsername}}/posts?sessionString=fake-session-string-for-the-negative-case&hoursBack=24",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "channel",
+                "{{channelUsername}}",
+                "posts"
+              ],
+              "query": [
+                {
+                  "key": "sessionString",
+                  "value": "fake-session-string-for-the-negative-case"
+                },
+                {
+                  "key": "hoursBack",
+                  "value": "24"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "P5 auth rate limit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "description": "Отправить шесть раз подряд с одним номером: первые пять проходят, шестой отдаёт 429 с заголовком Retry-After и полем retryAfterSeconds. Лимит считается по номеру, а не по ключу.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            }
+          }
+        },
+        {
+          "name": "P6 malformed channel username",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
+            "description": "Ожидается 400 до любого обращения к Telegram.",
+            "url": {
+              "raw": "{{baseUrl}}/telegram/channel/!!/posts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "channel",
+                "!!",
+                "posts"
+              ]
+            }
+          }
+        },
+        {
+          "name": "P7 password without a code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "description": "Ожидается 400: пароль принимается только вместе с кодом, то есть на шаге 2FA.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneNumber\": \"{{phoneNumber}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            }
+          }
         }
       ]
     },

@@ -41,8 +41,10 @@ TelegramController (REST) → TelegramService (GramJS logic) → Telegram MTProt
 
 - `GET /telegram/health` — liveness probe and the Railway health check target
 - `POST /telegram/auth` — multi-step auth: phone, SMS code, optional 2FA password; returns a `sessionString`
-- `GET /telegram/me` — session validity and account info
-- `GET /telegram/channel/:channelUsername/posts` — time-filtered posts, authorized by a `sessionString`
+- `GET /telegram/me` — session validity and account info; the `sessionString` travels in the `x-session-string` header
+- `GET /telegram/channel/:channelUsername/posts` — time-filtered posts; the `sessionString` travels in the `x-session-string` header, never in the URL
+
+Every route except the health probe requires an `x-api-key` header and is rate limited.
 
 Session model: `TelegramClient` instances are cached in an in-memory `Map<sessionString, TelegramClient>`. Everything is lost on process restart, and the cache is per-process, so horizontal scaling breaks session affinity. The cache is bounded and idle clients are evicted and disconnected, because every connected client pings Telegram continuously. Details: @.claude/rules/architecture.md and @.claude/rules/runtime-resources.md.
 
@@ -52,6 +54,10 @@ Key source files:
 - [src/telegram/telegram.controller.ts](src/telegram/telegram.controller.ts) — REST endpoints and request validation
 - [src/config/telegram.config.ts](src/config/telegram.config.ts) — loads `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`
 - [src/config/cors.config.ts](src/config/cors.config.ts) — loads the `CORS_ALLOWED_ORIGINS` allowlist
+- [src/config/api-keys.config.ts](src/config/api-keys.config.ts) — loads the `API_KEYS` caller allowlist
+- [src/shared/guards/api-key.guard.ts](src/shared/guards/api-key.guard.ts) — caller authentication; the health probe opts out via `@PublicRoute()`
+- [src/shared/guards/rate-limit.guard.ts](src/shared/guards/rate-limit.guard.ts) and [src/shared/guards/phone-rate-limit.guard.ts](src/shared/guards/phone-rate-limit.guard.ts) — per-key and per-phone limits
+- [src/shared/utils/rate-limit-store.ts](src/shared/utils/rate-limit-store.ts) — bounded fixed-window counters
 - [src/shared/utils/http-pipeline.ts](src/shared/utils/http-pipeline.ts) — body-size limit, global `ValidationPipe`, CORS options; called from `src/main.ts`
 - [src/shared/utils/process-handlers.ts](src/shared/utils/process-handlers.ts) — process handlers and the single deliberate shutdown path
 - [src/telegram/interfaces/message.interface.ts](src/telegram/interfaces/message.interface.ts) — `TelegramPost` and `TelegramMedia` types
@@ -149,6 +155,7 @@ Railway via [railway.toml](railway.toml): RAILPACK builder, `npm run start:prod`
 | `TELEGRAM_API_HASH` | 32-char API hash from my.telegram.org |
 | `PORT` | HTTP port (default 8080, matching `internal_port` in `railway.toml`) |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated browser origin allowlist for CORS; empty or unset means no browser origin is allowed, and `*` is ignored |
+| `API_KEYS` | Comma-separated caller API keys checked against the `x-api-key` header; empty or unset closes every endpoint except the health probe |
 
 Credentials are read only through `src/config/telegram.config.ts`. Boot does not fail when they are missing — the health endpoint stays up and the failure surfaces on first real use.
 

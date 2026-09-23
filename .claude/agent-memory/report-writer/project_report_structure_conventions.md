@@ -1,0 +1,18 @@
+---
+name: report-structure-conventions
+description: Structure decisions that repeat across tg-parser plan reports — header block, the two optional sections beyond the mandatory six, and how to handle a Finalize phase still marked todo
+metadata:
+  type: project
+---
+
+Отчёты `docs/reports/` в этом репозитории устоялись в форме, которая шире шести обязательных разделов `.claude/rules/report-generation.md`. Повторять её, чтобы отчёты читались одинаково:
+
+- Шапка списком: компонент, версия, дата, ветка, тир, ссылки на план, `risks.md`, `research.md`, `history.md` и на отчёты аудитов в `docs/reviews/`.
+- Phases — таблица «Фаза / Статус / Доказательство», в доказательстве фазы приводятся её собственные гейты (числа наборов и тестов на момент фазы), а не итоговые.
+- Два дополнительных раздела сверх обязательных: `Findings fixed during Finalize` (что нашли аудит и дымовой прогон уже после последней рабочей фазы) и, когда есть, `Deliberate deviation`.
+- Фаза Finalize на момент написания отчёта всегда стоит в `todo` с незакрытым чеклистом, потому что сам отчёт — последний пункт этого чеклиста. В таблице ей ставится `done (этот закрывающий прогон)` и прямо ниже даётся оговорка о фактическом статусе файла фазы.
+- Раздел Problems and tech debt открывается фразой об отсутствии `reflect.md` и перечислением источников, откуда список собран. `reflect.md` в папках планов пока не встречался ни разу.
+
+**Why:** `report-generation.md` задаёт минимум разделов, но не порядок и не то, как показывать незакрытую фазу Finalize; без общей формы два отчёта подряд расходятся и сравнивать их между блоками нельзя.
+
+**How to apply:** перед написанием нового отчёта открыть предыдущий в `docs/reports/` и держать тот же порядок разделов. Про измерение Affected files — [[diff-window-quirks]].

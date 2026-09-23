@@ -14,7 +14,7 @@ Mission: keep the target version consistent across `package.json`, the git branc
 - VERSION_BRANCH_PREFIX = `r-`
 - VERSION_FORMAT = `X.Y.Z`
 - CHANGELOG_VERSION_HEADER = `[X.Y.Z] DD.MM.YYYY` (plain line, no heading marker — match the existing file)
-- CHANGELOG_BULLET_PREFIX = `- [TGS] - `
+- CHANGELOG_BULLET_PREFIX = `- ` (a plain list item; no ticket or project tag)
 - CHANGELOG_DATE_FORMAT = `DD.MM.YYYY`
 - CHANGELOG_ENTRY_ORDER = newest completed task at the top of the version's bullet list
 - CHANGELOG_NEWEST_VERSION_POSITION = top of the file
@@ -48,7 +48,8 @@ Run all three against the target version before a commit.
 
 ## Changelog Entry Rules
 
-- One bullet per completed task, prefixed with CHANGELOG_BULLET_PREFIX; brief but self-explanatory (what changed, not how).
+- One bullet per completed task, written as CHANGELOG_BULLET_PREFIX plus the description; brief but self-explanatory (what changed, not how).
+- No prefix, tag, or ticket marker in front of the description. The former `- [TGS] - ` prefix was dropped and must not be reintroduced.
 - Newest completed task at the top of the version's list.
 - Match the surrounding language and style of the file; keep code identifiers as-is.
 - Header format follows CHANGELOG_VERSION_HEADER exactly — a plain bracketed version line, not a Markdown heading.
@@ -60,6 +61,7 @@ Run all three against the target version before a commit.
 - Adding a `git commit` step to a plan, or committing without an explicit user request.
 - Committing with the branch, VERSION_FILE, and CHANGELOG_FILE out of sync.
 - Introducing a heading marker or a different bullet prefix that breaks the existing changelog style.
+- Prefixing a bullet with a project or ticket tag such as `[TGS]`.
 - Stale changelog date on an existing version header.
 - Appending a new task bullet to the bottom instead of the top.
 - Creating or switching branches without explicit user approval.

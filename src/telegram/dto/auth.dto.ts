@@ -1,5 +1,14 @@
 import { Transform } from 'class-transformer';
-import { IsNotEmpty, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  Validate,
+  ValidatorConstraint,
+} from 'class-validator';
+import type { ValidationArguments, ValidatorConstraintInterface } from 'class-validator';
 
 const PHONE_NUMBER_PATTERN = /^\+?\d{7,15}$/;
 const PHONE_CODE_PATTERN = /^\d{4,8}$/;
@@ -13,6 +22,20 @@ const PASSWORD_MAX_LENGTH = 256;
 const blankStringToUndefined = Transform(({ value }: { value: unknown }) =>
   typeof value === 'string' && value.trim() === '' ? undefined : value,
 );
+
+/** The 2FA password belongs to the third auth step, so it is accepted only with a code. */
+@ValidatorConstraint({ name: 'passwordRequiresPhoneCode' })
+export class PasswordRequiresPhoneCodeConstraint implements ValidatorConstraintInterface {
+  validate(password: unknown, args: ValidationArguments): boolean {
+    const { phoneCode } = args.object as CompleteAuthDto;
+
+    return password === undefined || phoneCode !== undefined;
+  }
+
+  defaultMessage(): string {
+    return 'password is accepted only together with phoneCode';
+  }
+}
 
 export class StartAuthDto {
   @IsString()
@@ -29,6 +52,7 @@ export class CompleteAuthDto extends StartAuthDto {
   phoneCode?: string;
 
   @blankStringToUndefined
+  @Validate(PasswordRequiresPhoneCodeConstraint)
   @IsOptional()
   @IsString()
   @IsNotEmpty()
