@@ -1,148 +1,79 @@
-# Инструкция по деплою на Railway
+# Деплой на Railway
 
-## Шаг 1: Подготовка
+Сервис разворачивается на Railway по `railway.toml`: сборщик RAILPACK, запуск `npm run start:prod`, порт 8080, проверка живости `GET /telegram/health`.
 
-Убедись, что у тебя установлен Railway CLI:
+## Шаг 1: Создание проекта
+
+Через Dashboard:
+
+1. Открой [railway.app](https://railway.app/) и войди через GitHub
+2. Нажми "New Project" → "Deploy from GitHub repo"
+3. Выбери репозиторий `tg-parser`
+
+Или через CLI:
 
 ```bash
 npm install -g @railway/cli
-```
-
-## Шаг 2: Авторизация в Railway
-
-```bash
 railway login
-```
-
-Откроется браузер для авторизации. Войди через GitHub.
-
-## Шаг 3: Инициализация проекта
-
-В корне проекта выполни:
-
-```bash
 railway init
-```
-
-Выбери:
-- "Create a new project" если это новый проект
-- Введи имя проекта (например "telegram-parser")
-
-## Шаг 4: Добавление переменных окружения
-
-### Через CLI:
-
-```bash
-railway variables set TELEGRAM_API_ID=твой_api_id
-railway variables set TELEGRAM_API_HASH=твой_api_hash
-```
-
-### Через Dashboard:
-
-1. Открой Railway Dashboard: https://railway.app/dashboard
-2. Выбери свой проект
-3. Перейди в раздел "Variables"
-4. Добавь:
-   - `TELEGRAM_API_ID` = твой API ID
-   - `TELEGRAM_API_HASH` = твой API Hash
-
-## Шаг 5: Деплой
-
-```bash
 railway up
 ```
 
-Railway автоматически:
-- Обнаружит Node.js проект
-- Установит зависимости из package.json
-- Соберет проект (npm run build)
-- Запустит сервис (npm run start:prod)
+## Шаг 2: Переменные окружения
 
-## Шаг 6: Получение публичного домена
+В разделе "Variables" добавь (без кавычек):
 
-После успешного деплоя добавь публичный домен:
+- `TELEGRAM_API_ID` — числовой API ID с my.telegram.org
+- `TELEGRAM_API_HASH` — API hash из 32 символов
+- `API_KEYS` — ключи вызывающих сторон через запятую; без них открыт только `/telegram/health`
+- `CORS_ALLOWED_ORIGINS` — разрешённые браузерные источники через запятую; пусто — браузерные запросы запрещены, `*` игнорируется
 
-```bash
-railway domain
-```
+`PORT` задавать не нужно: без него сервис слушает 8080, это совпадает с `internal_port` в `railway.toml`.
 
-Или через Dashboard:
-1. Открой свой проект
-2. Перейди в "Settings" → "Networking"
-3. Нажми "Generate Domain"
+Сервис стартует и без `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`: проверка живости отвечает, а ошибка 500 появится при первом обращении к Telegram.
 
-Получишь URL типа: `https://telegram-parser-production.up.railway.app`
+## Шаг 3: Публичный домен
 
-## Проверка работы
+"Settings" → "Networking" → "Generate Domain", или `railway domain` в CLI.
 
-Проверь, что сервис работает:
+## Шаг 4: Проверка
 
 ```bash
-curl https://твой-домен.railway.app
+curl https://твой-домен.up.railway.app/telegram/health
 ```
 
-## Логи
+Ответ: `{"status":"ok"}`.
 
-Смотри логи:
+## Шаг 5: Авторизация
+
+Получи `sessionString` через `POST /telegram/auth` в три шага — номер, код, при необходимости пароль 2FA. Каждый запрос несёт заголовок `x-api-key`:
 
 ```bash
-railway logs
+curl -X POST https://твой-домен.up.railway.app/telegram/auth \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: твой_ключ" \
+  -d '{"phoneNumber": "+номер_телефона"}'
 ```
 
-Или в Dashboard → "Deployments" → выбери деплой → "View Logs"
+Полный порядок шагов и формат ответов — в [README.md](README.md). Дальше строка сессии передаётся только заголовком `x-session-string`.
+
+## Сессии и перезапуски
+
+Кэш клиентов Telegram живёт в памяти процесса. Сейчас код дополнительно пишет строки сессий в `data/`, и после простого перезапуска контейнера сессия может восстановиться из этого файла. Каждый деплой очищает файловую систему Railway, так что после деплоя нужно авторизоваться заново. Рассчитывать на `data/` нельзя: это открытое отклонение от задуманной модели.
+
+Кэш сессий принадлежит одному процессу: при запуске нескольких реплик запрос может попасть в реплику, которая сессию не знает. Держи одну реплику.
 
 ## Обновление
 
-При каждом новом деплое просто выполни:
+Railway пересобирает и разворачивает сервис при каждом push в подключённую ветку. Из CLI — `railway up`.
 
-```bash
-railway up
-```
+## Логи
 
-Или настрой автоматический деплой из GitHub:
-1. Push код в GitHub репозиторий
-2. В Railway Dashboard подключи GitHub repo
-3. Каждый push в main ветку будет автоматически деплоиться
+`railway logs` или Dashboard → "Deployments" → деплой → "View Logs". Номера телефонов и строки сессий в логи не пишутся.
 
-## Troubleshooting
+## Проблемы
 
-### Ошибка "TELEGRAM_API_ID is not configured"
-
-Проверь переменные окружения:
-
-```bash
-railway variables
-```
-
-Если их нет - добавь через `railway variables set`.
-
-### Проблемы с сессией
-
-Сессии хранятся в памяти и сбрасываются при перезапуске. Для production рекомендуется:
-- Использовать Redis для хранения сессий
-- Или сохранять сессии в базе данных
-
-### Port уже используется
-
-Railway автоматически устанавливает переменную `PORT`. Код использует `process.env.PORT`, а без неё — `DEFAULT_PORT` = 8080 (`src/shared/constants/http.constants.ts`), что совпадает с `internal_port` в `railway.toml`.
-
-## Полезные команды
-
-```bash
-# Открыть Dashboard
-railway open
-
-# Просмотр всех переменных
-railway variables
-
-# Просмотр статуса
-railway status
-
-# Удалить проект
-railway delete
-```
-
-## Стоимость
-
-Railway предоставляет $5 бесплатных кредитов каждый месяц. Этого достаточно для небольшого проекта. Следи за использованием в Dashboard.
-
+- 401 на любой маршрут, кроме health, — не передан `x-api-key` или ключ не входит в `API_KEYS`
+- 500 при авторизации — не заданы `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`, проверь `railway variables`
+- `{"status":"failed"}` от `/telegram/me` или 401 от `/telegram/channel/.../posts` — сессия неизвестна после деплоя или отозвана, авторизуйся заново
+- Сервис не стартует — смотри логи деплоя

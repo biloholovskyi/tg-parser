@@ -15,7 +15,7 @@
 
 ## Целевая версия
 
-Уточняется пользователем перед стартом работ. Этот блок приводит журнал изменений в соответствие с ней.
+1.4.1 — версия в `package.json`, ветка `r-1.4.1` и верхняя запись журнала уже совпадали на старте; блок дописан в неё.
 
 ## Высокорисковая поверхность
 
@@ -23,9 +23,9 @@
 
 ## Фазы
 
-- Phase 01 (todo) — чистка документов и артефактов: [phase-01-docs-and-artifacts.md](phase-01-docs-and-artifacts.md)
-- Phase 02 (todo) — версия и журнал изменений: [phase-02-version-and-changelog.md](phase-02-version-and-changelog.md)
-- Phase 03 (todo) — Finalize: [phase-03-finalize.md](phase-03-finalize.md)
+- Phase 01 (done) — чистка документов и артефактов: [phase-01-docs-and-artifacts.md](phase-01-docs-and-artifacts.md)
+- Phase 02 (done) — версия и журнал изменений: [phase-02-version-and-changelog.md](phase-02-version-and-changelog.md)
+- Phase 03 (done) — Finalize: [phase-03-finalize.md](phase-03-finalize.md)
 
 ## Покрытие правил
 

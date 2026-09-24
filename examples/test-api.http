@@ -1,42 +1,54 @@
 ### Telegram Parser API Examples
 ### Используй в VS Code с расширением REST Client
 
-@baseUrl = http://localhost:3000
+@baseUrl = http://localhost:8080
+@apiKey = YOUR_API_KEY_HERE
 @sessionString = YOUR_SESSION_STRING_HERE
 
 ### 1. Авторизация - Шаг 1: Отправка номера телефона
 POST {{baseUrl}}/telegram/auth
 Content-Type: application/json
+x-api-key: {{apiKey}}
 
 {
-  "phoneNumber": "+79991234567"
+  "phoneNumber": "+YOUR_PHONE_NUMBER"
 }
 
 ### 2. Авторизация - Шаг 2: Отправка кода из SMS
 POST {{baseUrl}}/telegram/auth
 Content-Type: application/json
+x-api-key: {{apiKey}}
 
 {
-  "phoneNumber": "+79991234567",
+  "phoneNumber": "+YOUR_PHONE_NUMBER",
   "phoneCode": "12345"
 }
 
 ### 3. Авторизация - Шаг 3: Отправка 2FA пароля (если требуется)
 POST {{baseUrl}}/telegram/auth
 Content-Type: application/json
+x-api-key: {{apiKey}}
 
 {
-  "phoneNumber": "+79991234567",
+  "phoneNumber": "+YOUR_PHONE_NUMBER",
   "phoneCode": "12345",
   "password": "your_2fa_password"
 }
 
 ### 4. Получение постов канала за последние 24 часа
-GET {{baseUrl}}/telegram/channel/durov/posts?sessionString={{sessionString}}
+GET {{baseUrl}}/telegram/channel/durov/posts
+x-api-key: {{apiKey}}
+x-session-string: {{sessionString}}
 
-### 5. Получение постов из другого канала
-GET {{baseUrl}}/telegram/channel/telegram/posts?sessionString={{sessionString}}
+### 5. Получение постов за последние 48 часов
+GET {{baseUrl}}/telegram/channel/telegram/posts?hoursBack=48
+x-api-key: {{apiKey}}
+x-session-string: {{sessionString}}
 
-### 6. Health check (если добавить эндпоинт)
-GET {{baseUrl}}/
+### 6. Проверка сессии
+GET {{baseUrl}}/telegram/me
+x-api-key: {{apiKey}}
+x-session-string: {{sessionString}}
 
+### 7. Health check (без ключа)
+GET {{baseUrl}}/telegram/health

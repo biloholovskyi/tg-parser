@@ -73,7 +73,7 @@ curl -X POST http://localhost:8080/telegram/auth \
 ```json
 {
   "needsCode": true,
-  "message": "Phone code is required. Please provide the code sent to your phone."
+  "message": "Phone code has been sent to your phone. Please provide the code."
 }
 ```
 
@@ -188,13 +188,14 @@ curl "http://localhost:8080/telegram/channel/durov/posts?hoursBack=24" \
 ```
 
 **Коды ошибок:**
-- `400` — не передана строка сессии, неверный код или пароль 2FA (у каждого случая своё сообщение)
+- `400` — не передана строка сессии или неверные параметры запроса
 - `401` — сессия неизвестна или отозвана, нужно авторизоваться заново
 - `404` — канал не найден или недоступен этому аккаунту
 - `429` — Telegram просит подождать, срок в поле `retryAfterSeconds`
-- `500` — не заданы `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`
 - `502` — прочий отказ Telegram
 - `503` — Telegram недоступен
+
+У `POST /telegram/auth` свои ошибки: `400` — неверный код или пароль 2FA (у каждого случая своё сообщение), `500` — не заданы `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`.
 
 **Типы медиа:**
 - `photo` - фото
@@ -203,36 +204,19 @@ curl "http://localhost:8080/telegram/channel/durov/posts?hoursBack=24" \
 
 ## 🚂 Деплой на Railway
 
-### Установка Railway CLI
+Пошаговая инструкция — в [DEPLOYMENT.md](DEPLOYMENT.md).
+
+## 🛠️ Команды
 
 ```bash
-npm i -g @railway/cli
+npm run start:dev   # разработка с перезапуском
+npm run build       # сборка в dist/
+npm run start:prod  # запуск собранного сервиса
+npm run lint        # ESLint с автоисправлением
+npm run typecheck   # проверка типов
+npm test            # unit-тесты
+npm run test:e2e    # E2E-тесты
 ```
-
-### Авторизация
-
-```bash
-railway login
-```
-
-### Создание проекта и деплой
-
-```bash
-# В корне проекта
-railway init
-railway up
-```
-
-### Настройка environment variables
-
-В Railway Dashboard добавь переменные окружения:
-- `TELEGRAM_API_ID` - твой API ID
-- `TELEGRAM_API_HASH` - твой API Hash
-- `API_KEYS` - ключи вызывающих сторон через запятую; без них открыт только health
-- `CORS_ALLOWED_ORIGINS` - список браузерных источников через запятую
-- `PORT` - Railway автоматически установит
-
-После деплоя Railway предоставит публичный URL для твоего сервиса.
 
 ## 🏗️ Архитектура
 
@@ -272,10 +256,18 @@ src/
 
 ## 📝 Примечания
 
-- Сессия хранится в памяти сервера
-- После перезапуска сервера нужно авторизоваться заново
-- Для production рекомендуется хранить сессии в базе данных
+- Клиенты Telegram кэшируются в памяти процесса: не больше 50 сессий, неактивные вытесняются
+- Код дополнительно пишет строки сессий в `data/`; после деплоя этот каталог очищается и нужно авторизоваться заново
+- Кэш принадлежит одному процессу, поэтому сервис запускается в одном экземпляре
 - Можно парсить как открытые, так и закрытые каналы (если ты в них состоишь)
+
+## 📚 Документация
+
+- [DEPLOYMENT.md](DEPLOYMENT.md) — деплой на Railway
+- [CHANGELOG.md](CHANGELOG.md) — история версий
+- [docs/integrations/n8n-workflow-guide.md](docs/integrations/n8n-workflow-guide.md) — n8n workflow: посты канала и саммари через ИИ
+- [docs/integrations/n8n-telegram-bot.md](docs/integrations/n8n-telegram-bot.md) — Telegram-бот для n8n
+- [examples/test-api.http](examples/test-api.http) — запросы для VS Code REST Client
 
 ## 🤝 Масштабирование
 

@@ -43,3 +43,6 @@ lerna-debug.log*
 *.session
 /data/
 
+
+# Exported channel posts (runtime output, not source)
+/posts_data/

@@ -21,8 +21,8 @@
 ## Предварительные требования
 
 1. Railway API задеплоено и работает
-2. Session string получен (см. [RAILWAY_DEPLOYMENT.md](./RAILWAY_DEPLOYMENT.md))
-3. Telegram бот создан (см. [N8N_TELEGRAM_BOT.md](./N8N_TELEGRAM_BOT.md))
+2. Session string получен (см. [DEPLOYMENT.md](../../DEPLOYMENT.md))
+3. Telegram бот создан (см. [n8n-telegram-bot.md](./n8n-telegram-bot.md))
 4. n8n установлен (локально или в облаке)
 5. API ключ от OpenAI/Anthropic (или локальный LLM)
 
@@ -114,13 +114,18 @@ return [{
 - Method: `GET`
 - URL: `https://твой-домен.railway.app/telegram/channel/{{ $json.channel }}/posts`
 - Query Parameters:
-  - `sessionString`: `твой_session_string` (из шага авторизации)
-  - `hoursBack`: `{{ $json.hours }}`
+  - `hoursBack`: `{{ $json.hours }}` (от 1 до 720)
+- Headers:
+  - `x-api-key`: `твой_ключ` (одно из значений `API_KEYS`)
+  - `x-session-string`: `твой_session_string` (из шага авторизации)
 - Authentication: `None`
 
 **⚠️ ВАЖНО:** Замени:
 - `твой-домен.railway.app` на реальный домен Railway
+- `твой_ключ` на ключ из `API_KEYS`
 - `твой_session_string` на реальный session string
+
+Строку сессии передавай только заголовком: в query-параметре сервис её не принимает.
 
 ### Node 4: IF - Check Response
 
@@ -300,11 +305,11 @@ const filteredPosts = posts.filter(post =>
 
 ### Session expired
 
-Если получаешь ошибку "Session not found" - нужно заново авторизоваться на Railway и обновить session string в n8n.
+Если приходит 401 - сессия неизвестна сервису или отозвана. Кэш сессий живёт в памяти процесса; код дополнительно пишет сессии в `data/`, но каждый деплой этот каталог стирает, поэтому рассчитывать на него нельзя. Авторизуйся заново и обнови session string в n8n.
 
 ### Timeout ошибки
 
-Если канал большой, увеличь timeout в HTTP Request node (Settings → Timeout → 30000ms).
+Один запрос постов делает несколько последовательных обращений к Telegram, и на большом канале это занимает заметное время. Увеличь timeout в HTTP Request node (Settings → Timeout) с запасом, а не до 30 секунд.
 
 ### ИИ возвращает на английском
 

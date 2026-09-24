@@ -62,7 +62,7 @@ https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
 
 ## Шаг 5: Подключи бота к n8n
 
-Теперь используй Bot Token в n8n workflow. См. [N8N_WORKFLOW_GUIDE.md](./N8N_WORKFLOW_GUIDE.md).
+Теперь используй Bot Token в n8n workflow. См. [n8n-workflow-guide.md](./n8n-workflow-guide.md).
 
 ## Команды бота
 
