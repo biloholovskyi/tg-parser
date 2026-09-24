@@ -1,6 +1,6 @@
 ---
 name: project-test-setup-gotchas
-description: Non-obvious setup facts for tg-parser specs — AppModule reloads the repo .env during compile, process listener bookkeeping needs a narrowed process view, DTO specs must mirror the pipe's (empty) transformOptions, module-level latches need a reset seam, and param-decorator factories are reached through ROUTE_ARGS_METADATA
+description: Non-obvious setup facts for tg-parser specs — AppModule reloads .env on compile, narrowed process view for listeners, DTO pipe options, facade wiring and fs observation, concurrency gating, pre-fix proofs in a scratch copy, closing lifecycle providers in E2E
 metadata:
   type: project
 ---
@@ -49,12 +49,16 @@ Setup facts that cost a debug cycle each when writing specs here.
    state. Reimplement the old algorithm as a throwaway Node script in the session scratchpad and
    check that the new assertions flip, instead of editing the production file to re-break it.
 
-8. `TelegramService` can be unit-tested with no DI module: `new TelegramService()` after
-   `jest.mock('telegram')` (a fake class that pushes itself into a `mockCreatedClients` array),
-   `telegram/sessions`, `telegram/tl` (plain request classes), `telegram/Password`,
-   `../config/telegram.config`, and `fs` as `{ ...jest.requireActual('fs'), mkdirSync, existsSync: () => false,
-   readFileSync, writeFileSync }` so the file-backed store never touches `data/`. The constructor starts
-   two `unref`'d intervals, so use fake timers and call `onModuleDestroy()` in `afterEach`.
+8. `TelegramService` is a facade over `AuthService`, `ChannelService`, `SessionStore` and
+   `TelegramClientFactory`. The black-box suite wires them by hand in a `buildService()` helper
+   (factory -> store -> services -> facade), with `jest.mock('telegram')` (a fake class pushing itself
+   into `mockCreatedClients`), `telegram/sessions`, `telegram/tl`, `telegram/Password`,
+   `telegram/extensions/Logger` and `../config/telegram.config`. Store and auth each start one `unref`'d
+   interval, so use fake timers and call `onModuleDestroy()` in `afterEach`. A "never touches disk"
+   proof mocks `fs` as the actual module with `jest.fn(actual)` wrappers (sync and `promises`) and
+   asserts zero calls plus `jest.isMockFunction`. To interleave concurrent requests, gate a call with a
+   hand-made deferred (`mockReturnValueOnce(gate.promise)` or `jest.spyOn(sessions, 'adopt')`) and
+   `await jest.advanceTimersByTimeAsync(0)` to let the other request run.
 
 9. `expect(p).rejects.toThrow(new XException(msg))` fails here for mapped Telegram errors: this Jest
    version compares the `cause` too, and `toHttpException` always sets one. Assert `toBeInstanceOf`
@@ -76,9 +80,12 @@ Setup facts that cost a debug cycle each when writing specs here.
     silently maps to 502. `SESSION_PASSWORD_NEEDED` is the exception: the service still checks it in
     `error.message`, which `rpcError` also satisfies.
 
-13. To test the file-backed store end to end, back the `fs` mock with an in-memory `Map<path, content>`
-    (`existsSync`/`readFileSync`/`writeFileSync` implementations) in a nested `beforeEach`, and restore the
-    default implementations in `afterEach` — `jest.restoreAllMocks()` does not reset `jest.fn` implementations.
+13. To prove a regression test fails without a fix when the file is untracked: copy `src/` to the
+    session scratchpad, restore the old logic there, and run
+    `node node_modules/jest/bin/jest.js --config <scratch>/jest.config.js --runTestsByPath <spec>` from the
+    repo, with a JS config holding `rootDir: 'src'`, `modulePaths: ['C:/Projects/tg-parser/node_modules']`
+    and ts-jest by absolute path with `{ diagnostics: false }` (types do not resolve outside the repo).
+    JSON configs and `--testPathPattern` against a temp path silently find nothing here.
 
 14. A controller unit spec should `jest.mock('./telegram.service', () => ({ TelegramService: class {} }))`
     so the DI token exists without loading GramJS, then provide `{ provide: TelegramService, useValue: mock }`.
@@ -96,3 +103,7 @@ problems.
 
 **How to apply:** when bootstrapping `AppModule` in `test/*.e2e-spec.ts`, or when a unit spec
 attaches real process handlers. See also [[project-test-run-environment]].
+
+16. E2E specs override only the `TelegramService` facade, so the real `AuthService` and `SessionStore`
+    are still built and each starts a sweep interval that nothing closes (the facade owns shutdown).
+    Call `closeLifecycleProviders(app)` from `test/lifecycle-providers.ts` before `app.close()`.

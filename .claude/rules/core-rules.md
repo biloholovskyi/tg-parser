@@ -90,7 +90,7 @@ Functions:
 
 TypeScript:
 
-- Current `tsconfig.json` runs with `strictNullChecks: false` and `noImplicitAny: false` — see `.claude/rules/typescript.md` for what that means for new code
+- `tsconfig.json` runs with `strictNullChecks` and `noImplicitAny` on — see `.claude/rules/typescript.md`
 - No path aliases are configured; imports are relative
 - New code is written as if strict: explicit types, no implicit `any`, no unchecked nullables
 

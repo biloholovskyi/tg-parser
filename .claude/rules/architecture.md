@@ -11,7 +11,7 @@ NestJS REST API that wraps GramJS (a Telegram MTProto client library) to read pu
 
 ## Request Flow
 
-`TelegramController` (REST) → `TelegramService` (GramJS logic) → Telegram MTProto API
+`TelegramController` (REST) → `TelegramService` (facade) → `AuthService` / `ChannelService` → `SessionStore` → Telegram MTProto API
 
 ## Module Structure
 
@@ -19,7 +19,7 @@ Every feature module contains:
 
 - `*.module.ts` — module declaration, imports, providers, exports
 - `*.controller.ts` — REST `@Controller()` with `@Get/@Post/@Put/@Patch/@Delete`
-- `*.service.ts` — business logic; all GramJS calls live here
+- `*.service.ts` — business logic; GramJS calls stay in the module's services and its client-lifecycle classes (in `src/telegram/`: `SessionStore`, `TelegramClientFactory`)
 - `dto/` — request DTOs with `class-validator` decorators
 - `interfaces/` — response shapes and domain types
 - optional `constants.ts`, `utils/` for module-local helpers
@@ -28,7 +28,7 @@ Controllers must be thin — delegate all logic to the service. Follow the patte
 
 ## Key Directories
 
-- `src/telegram/` — the single feature module: auth, session checks, channel post fetching; module-local `constants.ts` and `utils/` (`session-client-cache.ts`, `telegram-errors.ts`, `with-timeout.ts`)
+- `src/telegram/` — the single feature module: `telegram.service.ts` (facade, session check, shutdown order), `auth.service.ts` (multi-step auth, pending attempts), `channel.service.ts` (paged walk), `session-store.ts` (client lifecycle owner), `telegram-client.factory.ts` (the only `TelegramClient` constructor); module-local `constants.ts` and `utils/` (`session-client-cache.ts`, `telegram-errors.ts`, `with-timeout.ts`, `message.mapper.ts`)
 - `src/config/` — env-backed configuration loaders (`telegram.config.ts`, `cors.config.ts`, `api-keys.config.ts`)
 - `src/shared/` — cross-cutting helpers: `constants/` (`http.constants.ts`, `rate-limit.constants.ts`), `utils/` (`http-pipeline.ts`, `process-handlers.ts`, `rate-limit-store.ts`, header readers), `guards/` (caller authentication and rate limits), `decorators/` (route markers and the session parameter), `exceptions/` (the 429 response)
 - `src/app.module.ts` — root module
@@ -49,12 +49,13 @@ Contract changes to any of these are governed by `.claude/rules/api-contracts.md
 
 ## Session Model (critical)
 
-- `TelegramClient` instances are cached in memory in a `SessionClientCache` (`src/telegram/utils/session-client-cache.ts`, backed by a `Map` keyed by `sessionString`) owned by `TelegramService`.
+- `TelegramClient` instances are cached in memory in a `SessionClientCache` (`src/telegram/utils/session-client-cache.ts`, backed by a `Map` keyed by `sessionString`) owned by `SessionStore`, which alone connects and releases clients.
 - There is no database: every cached client and every issued session is lost on process restart, and a restart forces callers to re-authenticate or re-supply their `sessionString`.
 - The cache is bounded (least recently used entry evicted at the ceiling), idle entries are swept out, and every eviction releases the client with `destroy()`. Ceilings and TTLs are in `.claude/rules/runtime-resources.md`.
 - The cache is per-process. Any horizontal scaling of the service breaks session affinity; treat multi-instance deployment as a design change, not a config change.
 - The deployment filesystem is ephemeral, so disk is never part of the session model.
-- A file-backed session store currently exists in the code against this model; it is an open decision recorded under Known Deviations in `.claude/rules/telegram.md`.
+- Pending logins (between code sent and signed in) are held in memory by `AuthService` and expire after AUTH_STATE_TTL_MS.
+- Memory-only storage is a recorded user decision (`docs/plans/block-08-09-refactor-strictness-storage/adr-session-storage.md`).
 - Session handling rules, including connection lifecycle and secret hygiene, are in `.claude/rules/telegram.md`.
 
 ## Validation and Error Handling
@@ -70,7 +71,7 @@ Contract changes to any of these are governed by `.claude/rules/api-contracts.md
 - All services `@Injectable()`.
 - Constructor injection only — no property injection, no module-level singletons.
 - Cyclic imports between modules are forbidden; extract shared types and constants to `src/shared/`.
-- GramJS clients are created and owned by `TelegramService`; no other class instantiates a `TelegramClient`.
+- GramJS clients are constructed only by `TelegramClientFactory` and owned by `SessionStore`; no other class instantiates, connects or releases a `TelegramClient`.
 
 ## Module Checklist for New Features
 

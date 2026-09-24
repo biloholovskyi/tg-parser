@@ -28,7 +28,7 @@ A rule that describes a system the code abandoned is worse than no rule: it is l
 
 | Claim | Verified against |
 |-------|------------------|
-| Session and persistence model | `src/telegram/telegram.service.ts` — what is actually stored and where |
+| Session and persistence model | `src/telegram/session-store.ts` and `src/telegram/auth.service.ts` — what is actually stored and where |
 | Declared REST surface | every `@Controller` and route decorator |
 | Environment variables | every read in `src/config/` plus the deployed variable list |
 | Constants in rule files | the literal values and options present in code |

@@ -10,7 +10,7 @@ You are a read-only researcher for `tg-parser`. Locate relevant files, summarize
 Focus areas:
 
 - The Telegram feature module under `src/telegram/` — controller, service, `dto/`, `interfaces/`
-- The in-memory session cache and the GramJS client lifecycle inside `TelegramService`
+- The in-memory session cache and the GramJS client lifecycle owned by `SessionStore`
 - Configuration loaders under `src/config/`
 - Bootstrap and global wiring in `src/main.ts` and `src/app.module.ts`
 - Tests (`*.spec.ts`, `test/*.e2e-spec.ts`)

@@ -94,7 +94,7 @@ describe('CompleteAuthDto', () => {
 
     const expectedError = actualErrors.find((error) => error.property === 'phoneNumber');
     expect(expectedError).toBeDefined();
-    expect(expectedError.constraints).toHaveProperty('matches');
+    expect(expectedError?.constraints).toHaveProperty('matches');
   });
 
   it('rejects a phone number that is too long', async () => {
@@ -123,7 +123,7 @@ describe('CompleteAuthDto', () => {
 
     const expectedError = actualErrors.find((error) => error.property === 'phoneCode');
     expect(expectedError).toBeDefined();
-    expect(expectedError.constraints).toHaveProperty('matches');
+    expect(expectedError?.constraints).toHaveProperty('matches');
   });
 
   it('rejects a password longer than the allowed maximum', async () => {
@@ -136,7 +136,7 @@ describe('CompleteAuthDto', () => {
 
     const expectedError = actualErrors.find((error) => error.property === 'password');
     expect(expectedError).toBeDefined();
-    expect(expectedError.constraints).toHaveProperty('maxLength');
+    expect(expectedError?.constraints).toHaveProperty('maxLength');
   });
 
   it('StartAuthDto accepts a valid phone number on its own', async () => {
@@ -180,7 +180,7 @@ describe('CompleteAuthDto', () => {
 
       const expectedError = actualErrors.find((error) => error.property === 'password');
       expect(expectedError).toBeDefined();
-      expect(expectedError.constraints).toHaveProperty('passwordRequiresPhoneCode');
+      expect(expectedError?.constraints).toHaveProperty('passwordRequiresPhoneCode');
     });
 
     it('rejects a password sent with a blank phone code, which counts as absent', async () => {
@@ -194,7 +194,7 @@ describe('CompleteAuthDto', () => {
 
       const expectedError = actualErrors.find((error) => error.property === 'password');
       expect(expectedError).toBeDefined();
-      expect(expectedError.constraints).toHaveProperty('passwordRequiresPhoneCode');
+      expect(expectedError?.constraints).toHaveProperty('passwordRequiresPhoneCode');
     });
 
     it('accepts a blank password without a phone code, because a blank password is absent', async () => {
@@ -323,7 +323,7 @@ describe('CompleteAuthDto', () => {
       expect(actualDto.phoneNumber).toBe(INPUT_BLANK_VALUE);
       const expectedError = actualErrors.find((error) => error.property === 'phoneNumber');
       expect(expectedError).toBeDefined();
-      expect(expectedError.constraints).toHaveProperty('matches');
+      expect(expectedError?.constraints).toHaveProperty('matches');
     });
   });
 });

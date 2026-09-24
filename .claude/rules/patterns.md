@@ -108,7 +108,7 @@ Retry/Backoff:
 ### TypeScript
 
 - No new `any`; prefer `unknown` plus narrowing (see `.claude/rules/typescript.md`)
-- Write to strict semantics even though the compiler is permissive
+- Write to strict semantics; the compiler enforces `strictNullChecks` and `noImplicitAny` (`.claude/rules/typescript.md`)
 - No magic numbers with 2+ uses (extract)
 - One primary export per file; related secondary exports allowed when cohesion is high
 - JSDoc on public service methods

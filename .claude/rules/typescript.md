@@ -14,16 +14,16 @@ Project-specific TypeScript config and decorator usage.
 - Module: CommonJS (NestJS default)
 - Decorators enabled: `emitDecoratorMetadata: true`, `experimentalDecorators: true`
 - `esModuleInterop: true`, `allowSyntheticDefaultImports: true`, `skipLibCheck: true`
-- `strictNullChecks: false`, `noImplicitAny: false`, `strictBindCallApply: false`, `forceConsistentCasingInFileNames: false`
+- `strictNullChecks: true`, `noImplicitAny: true`, `strictBindCallApply: true`; the full `strict` family is not enabled (`strictPropertyInitialization` stays off for decorator-populated DTOs), `forceConsistentCasingInFileNames: false`
 - No path aliases are configured; imports are relative
 - ESLint: `no-console` is an error for `src/**/*.ts` except `*.spec.ts` (override in `.eslintrc.js`), backed by the scan in `src/no-console.spec.ts`
 
 ## Known Gaps
 
-The compiler is permissive and ESLint disables `@typescript-eslint/no-explicit-any`. Treat that as legacy tolerance, not as permission:
+ESLint still disables `@typescript-eslint/no-explicit-any`. Treat that as legacy tolerance, not as permission:
 
-- Write new code as if `strictNullChecks` and `noImplicitAny` were on: annotate parameters and return types, handle `null`/`undefined` explicitly.
-- Do not introduce new `any`. Use `unknown` plus narrowing when a third-party shape is genuinely unknown (GramJS results often are).
+- Annotate parameters and return types and handle `null`/`undefined` explicitly; the compiler enforces both.
+- Do not introduce new `any`. Use `unknown` plus narrowing when a third-party shape is genuinely unknown (GramJS results often are); any remaining `any` carries a comment with the reason.
 - Tightening `tsconfig.json` or the ESLint rules is a deliberate, user-approved change with its own plan — not a drive-by edit inside an unrelated task.
 - Adding a `@/*` path alias is likewise a user-approved change; until then, relative imports are correct and consistent.
 
@@ -57,8 +57,8 @@ The compiler is permissive and ESLint disables `@typescript-eslint/no-explicit-a
 ## Anti-Patterns
 
 - New `any` types (use `unknown` plus narrowing)
-- Implicit `any` parameters, relied on because the compiler allows it
-- Unchecked nullable access, relied on because `strictNullChecks` is off
+- Escaping `noImplicitAny` with an explicit `any` or an `as any` cast instead of typing the value
+- Non-null assertions (`!`) used to silence the compiler instead of handling the missing value
 - TypeScript `enum` in new code
 - Missing `class-validator` decorators on request DTOs
 - `console.log` in committed code (use the NestJS `Logger`)

@@ -78,7 +78,7 @@ describe('ChannelPostsParamsDto', () => {
 
     const expectedError = actualErrors.find((error) => error.property === 'channelUsername');
     expect(expectedError).toBeDefined();
-    expect(expectedError.constraints).toHaveProperty('matches');
+    expect(expectedError?.constraints).toHaveProperty('matches');
   });
 
   it('rejects a channel username longer than the maximum length', async () => {
@@ -90,7 +90,7 @@ describe('ChannelPostsParamsDto', () => {
 
     const expectedError = actualErrors.find((error) => error.property === 'channelUsername');
     expect(expectedError).toBeDefined();
-    expect(expectedError.constraints).toHaveProperty('matches');
+    expect(expectedError?.constraints).toHaveProperty('matches');
   });
 
   it('rejects a channel username that starts with a digit', async () => {
@@ -198,7 +198,7 @@ describe('GetPostsQueryDto', () => {
 
     const expectedError = actualErrors.find((error) => error.property === 'hoursBack');
     expect(expectedError).toBeDefined();
-    expect(expectedError.constraints).toHaveProperty('min');
+    expect(expectedError?.constraints).toHaveProperty('min');
   });
 
   it('rejects an hours window above the maximum', async () => {
@@ -208,7 +208,7 @@ describe('GetPostsQueryDto', () => {
 
     const expectedError = actualErrors.find((error) => error.property === 'hoursBack');
     expect(expectedError).toBeDefined();
-    expect(expectedError.constraints).toHaveProperty('max');
+    expect(expectedError?.constraints).toHaveProperty('max');
   });
 
   it('rejects a non-numeric hours window', async () => {
@@ -218,7 +218,7 @@ describe('GetPostsQueryDto', () => {
 
     const expectedError = actualErrors.find((error) => error.property === 'hoursBack');
     expect(expectedError).toBeDefined();
-    expect(expectedError.constraints).toHaveProperty('isInt');
+    expect(expectedError?.constraints).toHaveProperty('isInt');
   });
 
   it('rejects a fractional hours window', async () => {
@@ -228,7 +228,7 @@ describe('GetPostsQueryDto', () => {
 
     const expectedError = actualErrors.find((error) => error.property === 'hoursBack');
     expect(expectedError).toBeDefined();
-    expect(expectedError.constraints).toHaveProperty('isInt');
+    expect(expectedError?.constraints).toHaveProperty('isInt');
   });
 
   it('rejects an unknown query property under the production pipe settings', async () => {

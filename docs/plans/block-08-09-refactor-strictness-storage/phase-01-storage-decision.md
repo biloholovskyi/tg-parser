@@ -1,6 +1,6 @@
 # Phase 01 — Решение по хранилищу сессий
 
-Статус: todo
+Статус: done
 
 Требуемые правила: `.claude/rules/telegram.md`, `.claude/rules/drift-audit.md`, `.claude/rules/runtime-resources.md`, `.claude/rules/implementation-plans.md`
 
@@ -23,11 +23,11 @@
 
 ## Чеклист
 
-- [ ] ADR создан и принят пользователем
-- [ ] Known Deviations в `.claude/rules/telegram.md` закрыт
-- [ ] `CLAUDE.md` описывает принятую модель
-- [ ] Код приведён в соответствие с решением
-- [ ] Тесты на путь без хранилища написаны агентом `test-writer`
+- [x] ADR создан и принят пользователем
+- [x] Known Deviations в `.claude/rules/telegram.md` закрыт
+- [x] `CLAUDE.md` описывает принятую модель
+- [x] Код приведён в соответствие с решением
+- [x] Тесты на путь без хранилища написаны агентом `test-writer`
 
 ## Команды проверки
 

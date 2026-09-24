@@ -20,6 +20,7 @@ import {
   CHANNEL_UNAVAILABLE_MESSAGE,
   INVALID_SESSION_MESSAGE,
 } from '../src/telegram/utils/telegram-errors';
+import { closeLifecycleProviders } from './lifecycle-providers';
 
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
@@ -41,12 +42,14 @@ const INPUT_MALFORMED_CHANNEL = '1bad.channel';
 const EXPECTED_POSTS_RESPONSE = { posts: [], count: 0, isTruncated: false };
 const INPUT_FLOOD_SECONDS = 30;
 
-/** No real TelegramService is constructed, so nothing touches Telegram or the filesystem. */
+/**
+ * Replaces the TelegramService facade. The real lifecycle providers behind it are still built,
+ * but none of them creates a client unless the facade calls it, so nothing touches Telegram.
+ */
 const mockTelegramService = {
   authenticate: jest.fn(),
   checkSession: jest.fn(),
   getChannelPosts: jest.fn(),
-  disconnect: jest.fn(),
 };
 
 function buildChannelUsername(length: number): string {
@@ -79,6 +82,7 @@ describe('channel posts route (e2e)', () => {
   });
 
   afterAll(async () => {
+    await closeLifecycleProviders(app);
     await app.close();
 
     if (originalApiKeys === undefined) {

@@ -184,7 +184,8 @@ describe('TelegramController', () => {
     ])(
       'answers failed for %s session string without calling the service',
       async (_label, input) => {
-        const actualResponse = await controller.checkSession(input);
+        // The decorator yields a string, but the guard must hold if a caller bypasses it at runtime.
+        const actualResponse = await controller.checkSession(input as string);
 
         expect(actualResponse).toEqual({ status: 'failed' });
         expectServiceUntouched();
@@ -230,7 +231,12 @@ describe('TelegramController', () => {
       async (_label, input) => {
         const inputQuery: GetPostsQueryDto = { hoursBack: HOURS_BACK_DEFAULT };
 
-        const actualPromise = controller.getChannelPosts(buildParams(), inputQuery, input);
+        // The decorator yields a string, but the guard must hold if a caller bypasses it at runtime.
+        const actualPromise = controller.getChannelPosts(
+          buildParams(),
+          inputQuery,
+          input as string,
+        );
 
         await expect(actualPromise).rejects.toBeInstanceOf(BadRequestException);
         expectServiceUntouched();

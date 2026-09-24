@@ -8,7 +8,6 @@ export interface TelegramPost {
 
 export interface TelegramMedia {
   type: 'photo' | 'video' | 'document';
-  url?: string;
 }
 
 export interface GetPostsResponse {

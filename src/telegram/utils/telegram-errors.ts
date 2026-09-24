@@ -2,7 +2,9 @@ import {
   BadGatewayException,
   BadRequestException,
   HttpException,
+  HttpStatus,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -150,4 +152,19 @@ export function invalidSessionException(cause?: unknown): UnauthorizedException 
 /** Raised at use time when the API credentials are absent; boot stays healthy without them. */
 export function missingConfigException(): InternalServerErrorException {
   return new InternalServerErrorException(MISSING_CONFIG_MESSAGE);
+}
+
+/**
+ * Maps a failure to its HTTP exception and writes the single outcome line for the request:
+ * the operation, the status and a caller-safe error description, never the request payload.
+ */
+export function failWith(logger: Logger, operation: string, error: unknown): HttpException {
+  const exception = toHttpException(error);
+  const line = `${operation} failed: ${exception.getStatus()} (${describeError(error)})`;
+  if (exception.getStatus() >= HttpStatus.INTERNAL_SERVER_ERROR) {
+    logger.error(line);
+  } else {
+    logger.warn(line);
+  }
+  return exception;
 }

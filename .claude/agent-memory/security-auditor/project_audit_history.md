@@ -8,6 +8,14 @@ metadata:
 Audit log for this agent. Newest first. Reports live in `docs/reviews/security-audit-YYYY-MM-DD.md`
 (append a section when the file for that date already exists).
 
+- 2026-09-24 — block-08-09-refactor-strictness-storage (uncommitted) → `docs/reviews/block-08-09-security-audit.md`.
+  Closed: file-backed `data/` store (ADR: memory only, user decision), substring error classification.
+  New open: M1 pending-login state keyed by phone is dropped/deleted without ownership check
+  (`auth.service.ts` catch + `completeLogin`) — concurrent same-phone requests can orphan a connected
+  client; M2 evicted sessions never `auth.LogOut` (orphaned live authorizations). Still carried: H1 no
+  ceiling on pending logins, wrong code/password drops state, npm advisories (40 / 13 runtime).
+  Verdict: OK only behind trusted API keys.
+
 - 2026-09-23 — block-03-05-telegram-service (uncommitted diff) → `docs/reviews/block-03-05-security-audit.md`
   (caller-chosen path, not the dated file). Closed: session-prefix logging, raw MTProto text in bodies,
   phone numbers in logs. New open: M1 error classification by message substring (GramJS echoes the

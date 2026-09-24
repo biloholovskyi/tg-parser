@@ -73,13 +73,12 @@ export function describeError(error: unknown): string {
 }
 
 async function withTimeout(closing: Promise<unknown>): Promise<void> {
-  let timer: NodeJS.Timeout;
+  let timer: NodeJS.Timeout | undefined;
   const expiry = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(
       () => reject(new Error(`Shutdown did not finish within ${SHUTDOWN_TIMEOUT_MS}ms`)),
       SHUTDOWN_TIMEOUT_MS,
-    );
-    timer.unref();
+    ).unref();
   });
 
   try {

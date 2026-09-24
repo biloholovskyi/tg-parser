@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   HttpStatus,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -27,6 +28,7 @@ import {
   TELEGRAM_FAILED_MESSAGE,
   TELEGRAM_UNAVAILABLE_MESSAGE,
   describeError,
+  failWith,
   floodWaitSeconds,
   isChannelUnavailableError,
   isConnectivityError,
@@ -678,5 +680,94 @@ describe('describeError', () => {
 
     // Assert
     expect(actualResult).toBe(expectedResult);
+  });
+});
+
+describe('failWith', () => {
+  const inputOperation = 'Fake operation';
+  let mockLogger: Logger;
+  let mockWarn: jest.SpyInstance;
+  let mockError: jest.SpyInstance;
+
+  beforeEach(() => {
+    mockLogger = new Logger('FailWithSpec');
+    mockWarn = jest.spyOn(mockLogger, 'warn').mockImplementation(() => undefined);
+    mockError = jest.spyOn(mockLogger, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it.each([
+    ['PHONE_CODE_INVALID', BadRequestException, HttpStatus.BAD_REQUEST],
+    ['SESSION_REVOKED', UnauthorizedException, HttpStatus.UNAUTHORIZED],
+    ['CHANNEL_PRIVATE', NotFoundException, HttpStatus.NOT_FOUND],
+    [`FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`, TooManyRequestsException, HttpStatus.TOO_MANY_REQUESTS],
+  ])(
+    'logs a %s failure once at warn and returns the mapped exception',
+    (inputCode, expectedClass, expectedStatus) => {
+      // Arrange
+      const inputError = rpcError(inputCode);
+
+      // Act
+      const actualException = failWith(mockLogger, inputOperation, inputError);
+
+      // Assert
+      expect(actualException).toBeInstanceOf(expectedClass);
+      expect(actualException.getStatus()).toBe(expectedStatus);
+      expect(actualException.cause).toBe(inputError);
+      expect(mockWarn).toHaveBeenCalledTimes(1);
+      expect(mockWarn).toHaveBeenCalledWith(
+        `${inputOperation} failed: ${expectedStatus} (${inputCode})`,
+      );
+      expect(mockError).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['a connectivity failure', new Error('fake ECONNRESET'), ServiceUnavailableException],
+    ['an unknown RPC failure', rpcError('FAKE_UNKNOWN_RPC'), BadGatewayException],
+  ])(
+    'logs %s once at error and returns the mapped exception',
+    (_label, inputError, expectedClass) => {
+      // Act
+      const actualException = failWith(mockLogger, inputOperation, inputError);
+
+      // Assert
+      expect(actualException).toBeInstanceOf(expectedClass);
+      expect(mockError).toHaveBeenCalledTimes(1);
+      expect(mockError).toHaveBeenCalledWith(
+        `${inputOperation} failed: ${actualException.getStatus()} (${describeError(inputError)})`,
+      );
+      expect(mockWarn).not.toHaveBeenCalled();
+    },
+  );
+
+  it('logs a passed-through 500 at error, since the boundary is inclusive', () => {
+    // Arrange
+    const inputException = missingConfigException();
+
+    // Act
+    const actualException = failWith(mockLogger, inputOperation, inputException);
+
+    // Assert
+    expect(actualException).toBe(inputException);
+    expect(actualException.getStatus()).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+    expect(mockError).toHaveBeenCalledTimes(1);
+    expect(mockWarn).not.toHaveBeenCalled();
+  });
+
+  it('returns an HttpException unchanged and logs it at warn when it is below 500', () => {
+    // Arrange
+    const inputException = new BadRequestException('fake caller-safe message');
+
+    // Act
+    const actualException = failWith(mockLogger, inputOperation, inputException);
+
+    // Assert
+    expect(actualException).toBe(inputException);
+    expect(mockWarn).toHaveBeenCalledWith(expect.stringMatching(/^Fake operation failed: 400 \(/));
+    expect(mockError).not.toHaveBeenCalled();
   });
 });

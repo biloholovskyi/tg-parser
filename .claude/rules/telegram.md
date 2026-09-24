@@ -5,15 +5,15 @@ paths:
 ---
 # Telegram / GramJS
 
-Mission: keep every MTProto interaction inside `TelegramService`, treat session strings and API credentials as secrets, and fail with explicit HTTP statuses instead of leaking Telegram internals.
+Mission: keep every MTProto interaction inside the `src/telegram/` services, treat session strings and API credentials as secrets, and fail with explicit HTTP statuses instead of leaking Telegram internals.
 
 MTProto is Telegram's own wire protocol; GramJS speaks it as a user account (not a bot), so this service has the reach and the rate limits of a real user.
 
 ## Constants
 
 - API_CREDENTIAL_ENV = `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`
-- SESSION_CACHE = in-memory `SessionClientCache<TelegramClient>` keyed by `sessionString` (`src/telegram/utils/session-client-cache.ts`), owned by `TelegramService`
-- SESSION_PERSISTENCE = none (process memory only) — target model; see Known Deviations
+- SESSION_CACHE = in-memory `SessionClientCache<TelegramClient>` keyed by `sessionString` (`src/telegram/utils/session-client-cache.ts`), owned by `SessionStore` (`src/telegram/session-store.ts`)
+- SESSION_PERSISTENCE = none (process memory only) — decided in `docs/plans/block-08-09-refactor-strictness-storage/adr-session-storage.md`
 - AUTH_STEPS = phone number, SMS code, optional 2FA password
 - FLOOD_WAIT_ERROR = `FLOOD_WAIT_X` (seconds to wait carried in the error)
 - CLIENT_OPTION_BASELINE = explicit GramJS options from named constants (`.claude/rules/runtime-resources.md`)
@@ -31,8 +31,7 @@ MTProto is Telegram's own wire protocol; GramJS speaks it as a user account (not
 
 State the deviation, never silently rewrite the rule around it. Resolution protocol: `.claude/rules/drift-audit.md`.
 
-- `TelegramService` currently writes session strings to `data/sessions.json` and phone numbers with code hashes to `data/auth-states.json`. This contradicts SESSION_PERSISTENCE and the secret-hygiene rule above, and the deployment filesystem is ephemeral, so it buys nothing. The fork (drop the files, or move to an encrypted external store) is a user decision and is tracked as an open item, not as an accepted pattern.
-- Until that decision is made, no new code may extend the file-backed store, and `data/` stays untracked by git.
+- None open. The former file-backed session store was removed by user decision (ADR `docs/plans/block-08-09-refactor-strictness-storage/adr-session-storage.md`): sessions and pending logins live in memory only, nothing is written under `data/`, and `data/` stays git-ignored.
 
 ## Client Lifecycle
 
@@ -49,7 +48,7 @@ State the deviation, never silently rewrite the rule around it. Resolution proto
 | Telegram condition | HTTP response |
 |--------------------|---------------|
 | Missing `sessionString` header on the posts route | 400 `BadRequestException` |
-| `sessionString` unknown to this process (not cached, not restorable) | 401 `UnauthorizedException` |
+| `sessionString` unknown to this process (not cached) | 401 `UnauthorizedException` |
 | Session revoked, auth key invalid, not authorized | 401 `UnauthorizedException` |
 | Channel not found or not accessible to this account | 404 `NotFoundException` |
 | Phone code or phone number invalid, 2FA password wrong | 400 `BadRequestException` with a distinguishable message |

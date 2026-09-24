@@ -10,7 +10,6 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import * as fs from 'fs';
-import * as path from 'path';
 import { MS_IN_SECOND } from '../shared/constants/rate-limit.constants';
 import { TooManyRequestsException } from '../shared/exceptions/too-many-requests.exception';
 import {
@@ -31,6 +30,10 @@ import {
   SECONDS_IN_HOUR,
   TIMEOUT_SUFFIX,
 } from './constants';
+import { AuthService } from './auth.service';
+import { ChannelService } from './channel.service';
+import { SessionStore } from './session-store';
+import { TelegramClientFactory } from './telegram-client.factory';
 import { TelegramService } from './telegram.service';
 import {
   CHANNEL_UNAVAILABLE_MESSAGE,
@@ -153,13 +156,26 @@ jest.mock('../config/telegram.config', () => ({
   },
 }));
 
-jest.mock('fs', () => ({
-  ...jest.requireActual('fs'),
-  mkdirSync: jest.fn(),
-  existsSync: jest.fn(() => false),
-  readFileSync: jest.fn(() => '{}'),
-  writeFileSync: jest.fn(),
-}));
+/**
+ * The filesystem stays real, but every sync and promise-based read or write is observed, so a
+ * spec can prove the memory-only session model never reaches the disk.
+ */
+jest.mock('fs', () => {
+  const actualFs = jest.requireActual<typeof import('fs')>('fs');
+  return {
+    ...actualFs,
+    mkdirSync: jest.fn(actualFs.mkdirSync),
+    existsSync: jest.fn(actualFs.existsSync),
+    readFileSync: jest.fn(actualFs.readFileSync),
+    writeFileSync: jest.fn(actualFs.writeFileSync),
+    promises: {
+      ...actualFs.promises,
+      mkdir: jest.fn(actualFs.promises.mkdir),
+      readFile: jest.fn(actualFs.promises.readFile),
+      writeFile: jest.fn(actualFs.promises.writeFile),
+    },
+  };
+});
 
 const { Api: mockApi } = jest.requireMock<{
   Api: { Message: FakeMessageClass; MessageService: FakeMessageClass };
@@ -287,41 +303,62 @@ async function authenticateFully(service: TelegramService): Promise<MockTelegram
   return client;
 }
 
-const AUTH_STATES_FILE_SUFFIX = 'auth-states.json';
-const SESSIONS_FILE_NAME_SUFFIX = 'sessions.json';
-
-/** Backs the mocked fs with an in-memory map of path -> content. */
-function installInMemoryFs(files: Map<string, string>): void {
-  jest.mocked(fs.existsSync).mockImplementation((filePath) => files.has(String(filePath)));
-  jest
-    .mocked(fs.readFileSync)
-    .mockImplementation((filePath) => files.get(String(filePath)) ?? '{}');
-  jest.mocked(fs.writeFileSync).mockImplementation((filePath, content) => {
-    files.set(String(filePath), String(content));
-  });
+/** The production wiring of the module, built by hand: factory -> store -> services -> facade. */
+interface ServiceGraph {
+  service: TelegramService;
+  sessions: SessionStore;
 }
 
-/** `jest.restoreAllMocks()` does not reset `jest.fn` implementations, so restore them by hand. */
-function restoreDefaultFs(): void {
-  jest.mocked(fs.mkdirSync).mockImplementation(() => undefined);
-  jest.mocked(fs.existsSync).mockImplementation(() => false);
-  jest.mocked(fs.readFileSync).mockImplementation(() => '{}');
-  jest.mocked(fs.writeFileSync).mockImplementation(() => undefined);
+function buildService(): ServiceGraph {
+  const factory = new TelegramClientFactory();
+  const sessions = new SessionStore(factory);
+  const auth = new AuthService(factory, sessions);
+  const channels = new ChannelService(sessions);
+  return { service: new TelegramService(auth, channels, sessions), sessions };
 }
 
-/** Parsed content of the stored file whose path ends with `suffix`, or undefined when absent. */
-function storedFile(files: Map<string, string>, suffix: string): unknown {
-  const entry = [...files.entries()].find(([filePath]) => filePath.endsWith(suffix));
-  return entry ? JSON.parse(entry[1]) : undefined;
+/** The caller-facing message configured for an auth-input MTProto code. */
+function authInputMessageFor(inputCode: string): string {
+  const entry = AUTH_INPUT_ERRORS.find(([code]) => code === inputCode);
+  if (!entry) {
+    throw new Error(`No AUTH_INPUT_ERRORS entry for ${inputCode}`);
+  }
+  return entry[1];
 }
 
-function storedAuthPhones(files: Map<string, string>): string[] {
-  const content = storedFile(files, AUTH_STATES_FILE_SUFFIX) as Record<string, unknown>;
-  return content ? Object.keys(content) : [];
+/** The HTTP exception a call rejected with; fails the test when the call resolves instead. */
+async function captureHttpError(actualPromise: Promise<unknown>): Promise<HttpException> {
+  const actualError = await actualPromise.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(actualError).toBeInstanceOf(HttpException);
+  return actualError as HttpException;
+}
+
+/** Every observed filesystem entry point; the session model must call none of them. */
+function observedFsCalls(): number {
+  const observed = [
+    fs.mkdirSync,
+    fs.existsSync,
+    fs.readFileSync,
+    fs.writeFileSync,
+    fs.promises.mkdir,
+    fs.promises.readFile,
+    fs.promises.writeFile,
+  ];
+  for (const fsFunction of observed) {
+    expect(jest.isMockFunction(fsFunction)).toBe(true);
+  }
+  return observed.reduce(
+    (total, fsFunction) => total + jest.mocked(fsFunction).mock.calls.length,
+    0,
+  );
 }
 
 describe('TelegramService', () => {
   let service: TelegramService;
+  let sessions: SessionStore;
   let loggerSpies: LoggerSpies;
 
   beforeEach(() => {
@@ -331,7 +368,7 @@ describe('TelegramService', () => {
     mockActiveConfig = { ...mockFakeConfig };
     mockConfigError = undefined;
     loggerSpies = spyOnLogger();
-    service = new TelegramService();
+    ({ service, sessions } = buildService());
   });
 
   afterEach(async () => {
@@ -403,9 +440,7 @@ describe('TelegramService', () => {
 
     it('destroys the client when sendCode fails with PHONE_NUMBER_INVALID and returns 400', async () => {
       // Arrange
-      const expectedMessage = AUTH_INPUT_ERRORS.find(
-        ([code]) => code === 'PHONE_NUMBER_INVALID',
-      )[1];
+      const expectedMessage = authInputMessageFor('PHONE_NUMBER_INVALID');
       mockConfigureClient = (client) => {
         client.sendCode.mockRejectedValue(rpcError('PHONE_NUMBER_INVALID'));
       };
@@ -513,7 +548,7 @@ describe('TelegramService', () => {
     it('throws 500 with the configuration message when the credentials are missing', async () => {
       // Arrange
       mockActiveConfig = { apiId: 0, apiHash: '' };
-      const unconfiguredService = new TelegramService();
+      const { service: unconfiguredService } = buildService();
 
       try {
         // Act
@@ -546,7 +581,7 @@ describe('TelegramService', () => {
       'maps %s at sign-in to 400 with its own message and releases the client',
       async (inputCode) => {
         // Arrange
-        const expectedMessage = AUTH_INPUT_ERRORS.find(([code]) => code === inputCode)[1];
+        const expectedMessage = authInputMessageFor(inputCode);
         await service.authenticate(inputPhoneNumber);
         const mockClient = mockCreatedClients[0];
         mockClient.invoke.mockRejectedValueOnce(rpcError(inputCode));
@@ -562,9 +597,7 @@ describe('TelegramService', () => {
 
     it('maps a wrong 2FA password to 400 with a message distinct from the code errors', async () => {
       // Arrange
-      const expectedMessage = AUTH_INPUT_ERRORS.find(
-        ([code]) => code === 'PASSWORD_HASH_INVALID',
-      )[1];
+      const expectedMessage = authInputMessageFor('PASSWORD_HASH_INVALID');
       await service.authenticate(inputPhoneNumber);
       const mockClient = mockCreatedClients[0];
       mockClient.invoke
@@ -596,14 +629,57 @@ describe('TelegramService', () => {
     });
   });
 
-  describe('file-backed store is never touched on disk', () => {
-    it('routes every write through the mocked fs', async () => {
+  describe('memory-only session model', () => {
+    it('never touches the filesystem across a full 2FA login, a session check and a posts walk', async () => {
+      // Arrange
+      await service.authenticate(inputPhoneNumber);
+      const mockClient = mockCreatedClients[0];
+      mockClient.invoke
+        .mockRejectedValueOnce(rpcError('SESSION_PASSWORD_NEEDED'))
+        .mockRejectedValueOnce(rpcError('SESSION_PASSWORD_NEEDED'));
+      await service.authenticate(inputPhoneNumber, inputPhoneCode);
+
       // Act
-      await authenticateFully(service);
+      const actualLogin = await service.authenticate(
+        inputPhoneNumber,
+        inputPhoneCode,
+        inputPassword,
+      );
+      const actualCheck = await service.checkSession(mockFakeSessionString);
+      const actualPosts = await service.getChannelPosts(inputChannel, mockFakeSessionString);
+      await sessions.evict(mockFakeSessionString);
 
       // Assert
-      expect(jest.isMockFunction(fs.writeFileSync)).toBe(true);
-      expect(fs.writeFileSync).toHaveBeenCalled();
+      expect(actualLogin.sessionString).toBe(mockFakeSessionString);
+      expect(actualCheck).toEqual({ status: 'success' });
+      expect(actualPosts.count).toBe(0);
+      expect(observedFsCalls()).toBe(0);
+    });
+
+    it('never touches the filesystem when a login fails or a pending state expires', async () => {
+      // Arrange
+      await service.authenticate(inputPhoneNumber);
+      mockCreatedClients[0].invoke.mockRejectedValueOnce(rpcError('PHONE_CODE_INVALID'));
+      await service.authenticate(inputOtherPhoneNumber);
+
+      // Act
+      await service.authenticate(inputPhoneNumber, inputPhoneCode).catch(() => undefined);
+      await jest.advanceTimersByTimeAsync(AUTH_STATE_TTL_MS + AUTH_STATE_SWEEP_INTERVAL_MS);
+
+      // Assert
+      expect(mockCreatedClients[1].destroy).toHaveBeenCalledTimes(1);
+      expect(observedFsCalls()).toBe(0);
+    });
+
+    it('never touches the filesystem when the service is built and shut down', async () => {
+      // Arrange
+      const { service: inputService } = buildService();
+
+      // Act
+      await inputService.onModuleDestroy();
+
+      // Assert
+      expect(observedFsCalls()).toBe(0);
     });
   });
 
@@ -953,20 +1029,14 @@ describe('TelegramService', () => {
       // Arrange
       const mockClient = await authenticateFully(service);
       mockClient.getMessages.mockRejectedValueOnce(rpcError('SESSION_REVOKED'));
-      const actualRevoked: HttpException = await service
-        .getChannelPosts(inputChannel, mockFakeSessionString)
-        .then(
-          () => undefined,
-          (error: HttpException) => error,
-        );
+      const actualRevoked = await captureHttpError(
+        service.getChannelPosts(inputChannel, mockFakeSessionString),
+      );
 
       // Act
-      const actualUnknown: HttpException = await service
-        .getChannelPosts(inputChannel, 'fake-session-never-issued')
-        .then(
-          () => undefined,
-          (error: HttpException) => error,
-        );
+      const actualUnknown = await captureHttpError(
+        service.getChannelPosts(inputChannel, 'fake-session-never-issued'),
+      );
 
       // Assert
       expect(actualUnknown).toBeInstanceOf(UnauthorizedException);
@@ -1000,81 +1070,6 @@ describe('TelegramService', () => {
         await expect(service.checkSession(mockFakeSessionString)).resolves.toEqual({
           status: 'success',
         });
-      });
-    });
-
-    describe('file-backed session store after a revoked session', () => {
-      const SESSIONS_FILE_SUFFIX = 'sessions.json';
-      let mockFiles: Map<string, string>;
-
-      function sessionsFileContent(): string[] {
-        const entry = [...mockFiles.entries()].find(([filePath]) =>
-          filePath.endsWith(SESSIONS_FILE_SUFFIX),
-        );
-        return entry ? (JSON.parse(entry[1]) as string[]) : [];
-      }
-
-      beforeEach(() => {
-        mockFiles = new Map();
-        jest
-          .mocked(fs.existsSync)
-          .mockImplementation((filePath) => mockFiles.has(String(filePath)));
-        jest
-          .mocked(fs.readFileSync)
-          .mockImplementation((filePath) => mockFiles.get(String(filePath)) ?? '{}');
-        jest.mocked(fs.writeFileSync).mockImplementation((filePath, content) => {
-          mockFiles.set(String(filePath), String(content));
-        });
-      });
-
-      afterEach(() => {
-        jest.mocked(fs.existsSync).mockImplementation(() => false);
-        jest.mocked(fs.readFileSync).mockImplementation(() => '{}');
-        jest.mocked(fs.writeFileSync).mockImplementation(() => undefined);
-      });
-
-      it('removes the revoked session from the file so the next call does not restore it', async () => {
-        // Arrange
-        const mockClient = await authenticateFully(service);
-        expect(sessionsFileContent()).toContain(mockFakeSessionString);
-        mockClient.getMessages.mockRejectedValueOnce(rpcError('SESSION_REVOKED'));
-        const expectedClientCount = mockCreatedClients.length;
-
-        // Act
-        const actualPosts = service.getChannelPosts(inputChannel, mockFakeSessionString);
-        await expectHttpError(actualPosts, UnauthorizedException, INVALID_SESSION_MESSAGE);
-        const actualCheck = await service.checkSession(mockFakeSessionString);
-
-        // Assert
-        expect(sessionsFileContent()).not.toContain(mockFakeSessionString);
-        expect(actualCheck).toEqual({ status: 'failed' });
-        expect(mockCreatedClients).toHaveLength(expectedClientCount);
-      });
-
-      it('removes the session from the file when checkSession sees AUTH_KEY_UNREGISTERED', async () => {
-        // Arrange
-        const mockClient = await authenticateFully(service);
-        mockClient.invoke.mockRejectedValueOnce(rpcError('AUTH_KEY_UNREGISTERED'));
-
-        // Act
-        const actualResult = await service.checkSession(mockFakeSessionString);
-
-        // Assert
-        expect(actualResult).toEqual({ status: 'failed' });
-        expect(sessionsFileContent()).not.toContain(mockFakeSessionString);
-      });
-
-      it('keeps the session in the file on a non-session failure', async () => {
-        // Arrange
-        const mockClient = await authenticateFully(service);
-        mockClient.getMessages.mockRejectedValueOnce(rpcError('CHANNEL_PRIVATE'));
-
-        // Act
-        const actualResult = service.getChannelPosts(inputChannel, mockFakeSessionString);
-
-        // Assert
-        await expect(actualResult).rejects.toBeInstanceOf(NotFoundException);
-        expect(sessionsFileContent()).toContain(mockFakeSessionString);
       });
     });
 
@@ -1144,13 +1139,13 @@ describe('TelegramService', () => {
     });
   });
 
-  describe('disconnect', () => {
+  describe('SessionStore.evict through the wired graph', () => {
     it('destroys the cached client and forgets the session', async () => {
       // Arrange
       const mockClient = await authenticateFully(service);
 
       // Act
-      await service.disconnect(mockFakeSessionString);
+      await sessions.evict(mockFakeSessionString);
 
       // Assert
       expect(mockClient.destroy).toHaveBeenCalledTimes(1);
@@ -1164,7 +1159,7 @@ describe('TelegramService', () => {
       const mockClient = await authenticateFully(service);
 
       // Act
-      await service.disconnect('fake-session-unknown');
+      await sessions.evict('fake-session-unknown');
 
       // Assert
       expect(mockClient.destroy).not.toHaveBeenCalled();
@@ -1277,46 +1272,6 @@ describe('TelegramService', () => {
       await expect(actualResult).rejects.toBeInstanceOf(BadRequestException);
       expect(countLogLines(loggerSpies)).toBe(1);
       expect(loggerSpies.warn).toHaveBeenCalledWith(expect.stringContaining('Auth failed: 400'));
-      expectNoAuthSecretLogged();
-    });
-
-    it('logs a file-store write failure at error level without the phone number', async () => {
-      // Arrange
-      jest.mocked(fs.writeFileSync).mockImplementationOnce(() => {
-        throw new Error('fake EACCES');
-      });
-
-      // Act
-      await service.authenticate(inputPhoneNumber);
-
-      // Assert
-      expect(loggerSpies.error).toHaveBeenCalledTimes(1);
-      expect(loggerSpies.error).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to save auth state'),
-      );
-      expect(loggerSpies.log).toHaveBeenCalledWith('Auth: code sent');
-      expectNoAuthSecretLogged();
-    });
-
-    it('logs the restore of a pending auth state at debug without the phone number', async () => {
-      // Arrange
-      const inputPersisted = JSON.stringify({
-        [inputPhoneNumber]: { phoneCodeHash: 'fake-code-hash', createdAt: Date.now() },
-      });
-      jest.mocked(fs.existsSync).mockImplementation(() => true);
-      jest.mocked(fs.readFileSync).mockImplementation(() => inputPersisted);
-
-      try {
-        // Act
-        await service.authenticate(inputPhoneNumber, inputPhoneCode);
-      } finally {
-        jest.mocked(fs.existsSync).mockImplementation(() => false);
-        jest.mocked(fs.readFileSync).mockImplementation(() => '{}');
-      }
-
-      // Assert
-      expect(loggerSpies.debug).toHaveBeenCalledWith('Auth: pending state restored from file');
-      expect(loggerSpies.log).toHaveBeenCalledWith('Auth: authenticated');
       expectNoAuthSecretLogged();
     });
   });
@@ -1525,7 +1480,7 @@ describe('TelegramService', () => {
       clearLoggerSpies(loggerSpies);
 
       // Act
-      const unconfiguredService = new TelegramService();
+      const { service: unconfiguredService } = buildService();
 
       try {
         // Assert
@@ -1543,55 +1498,19 @@ describe('TelegramService', () => {
         await unconfiguredService.onModuleDestroy();
       }
     });
-
-    it('constructs when the data directory cannot be created and logs the failure at error', async () => {
-      // Arrange
-      jest.mocked(fs.mkdirSync).mockImplementationOnce(() => {
-        throw new Error('fake EACCES mkdir');
-      });
-      clearLoggerSpies(loggerSpies);
-
-      // Act
-      const degradedService = new TelegramService();
-
-      try {
-        // Assert
-        expect(loggerSpies.error).toHaveBeenCalledWith(
-          'Failed to create data directory: Error: fake EACCES mkdir',
-        );
-        const actualResult = await degradedService.authenticate(inputPhoneNumber);
-        expect(actualResult.needsCode).toBe(true);
-        expect(loggedText(loggerSpies)).not.toContain(inputPhoneNumber);
-      } finally {
-        await degradedService.onModuleDestroy();
-      }
-    });
   });
 
   describe('auth-state TTL sweep', () => {
-    let mockFiles: Map<string, string>;
-
-    beforeEach(() => {
-      mockFiles = new Map();
-      installInMemoryFs(mockFiles);
-    });
-
-    afterEach(() => {
-      restoreDefaultFs();
-    });
-
-    it('releases an expired pending client, drops its state and deletes its file entry', async () => {
+    it('releases an expired pending client and drops its state, so step 2 answers 400', async () => {
       // Arrange
       await service.authenticate(inputPhoneNumber);
       const mockPendingClient = mockCreatedClients[0];
-      expect(storedAuthPhones(mockFiles)).toEqual([inputPhoneNumber]);
 
       // Act
       await jest.advanceTimersByTimeAsync(AUTH_STATE_TTL_MS + AUTH_STATE_SWEEP_INTERVAL_MS);
 
       // Assert
       expect(mockPendingClient.destroy).toHaveBeenCalledTimes(1);
-      expect(storedAuthPhones(mockFiles)).toEqual([]);
       await expect(service.authenticate(inputPhoneNumber, inputPhoneCode)).rejects.toThrow(
         CODE_NOT_REQUESTED_PATTERN,
       );
@@ -1615,73 +1534,58 @@ describe('TelegramService', () => {
       expect(actualDestroyedAtTtl).toBe(0);
       expect(mockOlderClient.destroy).toHaveBeenCalledTimes(1);
       expect(mockYoungerClient.destroy).not.toHaveBeenCalled();
-      expect(storedAuthPhones(mockFiles)).toEqual([inputOtherPhoneNumber]);
       const actualResult = await service.authenticate(inputOtherPhoneNumber, inputPhoneCode);
       expect(actualResult.sessionString).toBe(mockFakeSessionString);
       expect(mockYoungerClient.invoke).toHaveBeenCalledTimes(1);
     });
   });
 
-  describe('session restore from the file store (cache empty after a restart)', () => {
-    const inputPersistedSession = 'fake-persisted-session';
-    const sessionsFilePath = path.join(process.cwd(), 'data', SESSIONS_FILE_NAME_SUFFIX);
-    let mockFiles: Map<string, string>;
+  describe('empty cache after a restart (sessions live in memory only)', () => {
+    let restarted: ServiceGraph;
 
-    beforeEach(() => {
-      mockFiles = new Map([[sessionsFilePath, JSON.stringify([inputPersistedSession])]]);
-      installInMemoryFs(mockFiles);
+    beforeEach(async () => {
+      await authenticateFully(service);
+      await service.authenticate(inputOtherPhoneNumber);
+      await service.onModuleDestroy();
+      mockCreatedClients.length = 0;
+      restarted = buildService();
     });
 
-    afterEach(() => {
-      restoreDefaultFs();
+    afterEach(async () => {
+      await restarted.service.onModuleDestroy();
     });
 
-    it('creates, connects and caches a client for a session found only in the file', async () => {
+    it('rejects posts for a session issued before the restart with 401 and creates no client', async () => {
       // Act
-      const actualFirstResult = await service.checkSession(inputPersistedSession);
-      const actualSecondResult = await service.checkSession(inputPersistedSession);
+      const actualResult = restarted.service.getChannelPosts(inputChannel, mockFakeSessionString);
 
       // Assert
-      expect(actualFirstResult).toEqual({ status: 'success' });
-      expect(actualSecondResult).toEqual({ status: 'success' });
-      expect(mockCreatedClients).toHaveLength(1);
-      const [mockRestoredClient] = mockCreatedClients;
-      const [actualSession] = mockRestoredClient.constructorArgs as [{ initial: string }];
-      expect(actualSession.initial).toBe(inputPersistedSession);
-      expect(mockRestoredClient.connect).toHaveBeenCalledTimes(1);
-      expect(mockRestoredClient.invoke).toHaveBeenCalledTimes(2);
-      expect(mockRestoredClient.destroy).not.toHaveBeenCalled();
+      await expectHttpError(actualResult, UnauthorizedException, INVALID_SESSION_MESSAGE);
+      expect(mockCreatedClients).toHaveLength(0);
     });
 
-    it('destroys the restored client when its connect fails, maps to 503 and caches nothing', async () => {
-      // Arrange
-      mockConfigureClient = (client) => {
-        client.connect.mockRejectedValue(new Error('fake ECONNREFUSED'));
-      };
-
+    it('reports failed for a session issued before the restart and creates no client', async () => {
       // Act
-      const actualResult = service.getChannelPosts(inputChannel, inputPersistedSession);
+      const actualResult = await restarted.service.checkSession(mockFakeSessionString);
 
       // Assert
-      await expectHttpError(
-        actualResult,
-        ServiceUnavailableException,
-        TELEGRAM_UNAVAILABLE_MESSAGE,
-      );
-      expect(mockCreatedClients).toHaveLength(1);
-      expect(mockCreatedClients[0].destroy).toHaveBeenCalledTimes(1);
-      expect(mockCreatedClients[0].getInputEntity).not.toHaveBeenCalled();
-      expect(storedFile(mockFiles, SESSIONS_FILE_NAME_SUFFIX)).toEqual([inputPersistedSession]);
-      mockConfigureClient = () => undefined;
-      await expect(service.checkSession(inputPersistedSession)).resolves.toEqual({
-        status: 'success',
-      });
-      expect(mockCreatedClients).toHaveLength(2);
+      expect(actualResult).toEqual({ status: 'failed' });
+      expect(mockCreatedClients).toHaveLength(0);
+    });
+
+    it('forgets a pending login from before the restart, so step 2 answers 400 without a client', async () => {
+      // Act
+      const actualResult = restarted.service.authenticate(inputOtherPhoneNumber, inputPhoneCode);
+
+      // Assert
+      await expect(actualResult).rejects.toThrow(CODE_NOT_REQUESTED_PATTERN);
+      await expect(actualResult).rejects.toBeInstanceOf(BadRequestException);
+      expect(mockCreatedClients).toHaveLength(0);
     });
 
     it('rejects a blank session string with 401 without creating a client', async () => {
       // Act
-      const actualResult = service.getChannelPosts(inputChannel, '   ');
+      const actualResult = restarted.service.getChannelPosts(inputChannel, '   ');
 
       // Assert
       await expectHttpError(actualResult, UnauthorizedException, INVALID_SESSION_MESSAGE);
@@ -1727,6 +1631,143 @@ describe('TelegramService', () => {
     });
   });
 
+  describe("authenticate: concurrent attempts for one phone never release each other's client", () => {
+    /** A promise the test settles by hand, to hold a call open while another request runs. */
+    function deferred<T>(): {
+      promise: Promise<T>;
+      resolve: (value: T) => void;
+      reject: (error: unknown) => void;
+    } {
+      let resolve: (value: T) => void = () => undefined;
+      let reject: (error: unknown) => void = () => undefined;
+      const promise = new Promise<T>((onResolve, onReject) => {
+        resolve = onResolve;
+        reject = onReject;
+      });
+      return { promise, resolve, reject };
+    }
+
+    it('keeps a newer attempt stored while step 2 was adopting its client, and signs in with it next', async () => {
+      // Arrange
+      await service.authenticate(inputPhoneNumber);
+      const mockFirstClient = mockCreatedClients[0];
+      const adoptGate = deferred<void>();
+      const originalAdopt = sessions.adopt.bind(sessions);
+      const mockAdopt = jest.spyOn(sessions, 'adopt').mockImplementationOnce(async (client) => {
+        await adoptGate.promise;
+        return originalAdopt(client);
+      });
+      const actualFirstLogin = service.authenticate(inputPhoneNumber, inputPhoneCode);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockAdopt).toHaveBeenCalledTimes(1);
+      await service.authenticate(inputPhoneNumber);
+      const mockNewerClient = mockCreatedClients[1];
+
+      // Act
+      adoptGate.resolve();
+      const actualFirstResult = await actualFirstLogin;
+      const actualSecondResult = await service.authenticate(inputPhoneNumber, inputPhoneCode);
+
+      // Assert
+      expect(actualFirstResult.sessionString).toBe(mockFakeSessionString);
+      expect(mockNewerClient.destroy).not.toHaveBeenCalled();
+      expect(mockNewerClient.invoke).toHaveBeenCalledTimes(1);
+      expect(mockFirstClient.invoke).toHaveBeenCalledTimes(1);
+      expect(actualSecondResult.sessionString).toBe(mockFakeSessionString);
+      expect(mockCreatedClients).toHaveLength(2);
+    });
+
+    it('does not destroy the client being adopted when step 1 for the same phone arrives meanwhile', async () => {
+      // Arrange
+      const inputAdoptedSession = 'fake-session-being-adopted';
+      await service.authenticate(inputPhoneNumber);
+      const mockAdoptedClient = mockCreatedClients[0];
+      mockAdoptedClient.session.save.mockReturnValue(inputAdoptedSession);
+      const adoptGate = deferred<void>();
+      const originalAdopt = sessions.adopt.bind(sessions);
+      jest.spyOn(sessions, 'adopt').mockImplementationOnce(async (client) => {
+        await adoptGate.promise;
+        return originalAdopt(client);
+      });
+      const actualLogin = service.authenticate(inputPhoneNumber, inputPhoneCode);
+      await jest.advanceTimersByTimeAsync(0);
+      await service.authenticate(inputPhoneNumber);
+      const expectedConnectCount = mockAdoptedClient.connect.mock.calls.length;
+
+      // Act
+      adoptGate.resolve();
+      const actualResult = await actualLogin;
+      const actualCheck = await service.checkSession(inputAdoptedSession);
+
+      // Assert
+      expect(actualResult.sessionString).toBe(inputAdoptedSession);
+      expect(mockAdoptedClient.destroy).not.toHaveBeenCalled();
+      expect(actualCheck).toEqual({ status: 'success' });
+      expect(mockAdoptedClient.connect).toHaveBeenCalledTimes(expectedConnectCount);
+      expect(mockCreatedClients[1].destroy).not.toHaveBeenCalled();
+    });
+
+    it('does not destroy a newer pending client when an older step 2 fails afterwards', async () => {
+      // Arrange
+      await service.authenticate(inputPhoneNumber);
+      const mockOlderClient = mockCreatedClients[0];
+      const signInGate = deferred<unknown>();
+      mockOlderClient.invoke.mockReturnValueOnce(signInGate.promise);
+      const actualOlderLogin = service.authenticate(inputPhoneNumber, inputPhoneCode);
+      await jest.advanceTimersByTimeAsync(0);
+      await service.authenticate(inputPhoneNumber);
+      const mockNewerClient = mockCreatedClients[1];
+
+      // Act
+      signInGate.reject(rpcError('PHONE_CODE_INVALID'));
+      await expectHttpError(
+        actualOlderLogin,
+        BadRequestException,
+        authInputMessageFor('PHONE_CODE_INVALID'),
+      );
+      const actualNewerResult = await service.authenticate(inputPhoneNumber, inputPhoneCode);
+
+      // Assert
+      expect(mockOlderClient.destroy).toHaveBeenCalled();
+      expect(mockNewerClient.destroy).not.toHaveBeenCalled();
+      expect(mockNewerClient.invoke).toHaveBeenCalledTimes(1);
+      expect(actualNewerResult.sessionString).toBe(mockFakeSessionString);
+    });
+
+    it('releases only its own client when step 1 fails after a concurrent step 1 stored an attempt', async () => {
+      // Arrange
+      const sendCodeGates: Array<ReturnType<typeof deferred<{ phoneCodeHash: string }>>> = [];
+      mockConfigureClient = (client) => {
+        const gate = deferred<{ phoneCodeHash: string }>();
+        sendCodeGates.push(gate);
+        client.sendCode.mockReturnValueOnce(gate.promise);
+      };
+      const actualFailingRequest = service.authenticate(inputPhoneNumber);
+      await jest.advanceTimersByTimeAsync(0);
+      const actualWinningRequest = service.authenticate(inputPhoneNumber);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockCreatedClients).toHaveLength(2);
+      const [mockFailingClient, mockWinningClient] = mockCreatedClients;
+      sendCodeGates[1].resolve({ phoneCodeHash: 'fake-code-hash-winning' });
+      await actualWinningRequest;
+
+      // Act
+      sendCodeGates[0].reject(rpcError('PHONE_NUMBER_INVALID'));
+      await expectHttpError(
+        actualFailingRequest,
+        BadRequestException,
+        authInputMessageFor('PHONE_NUMBER_INVALID'),
+      );
+      const actualResult = await service.authenticate(inputPhoneNumber, inputPhoneCode);
+
+      // Assert
+      expect(mockFailingClient.destroy).toHaveBeenCalledTimes(1);
+      expect(mockWinningClient.destroy).not.toHaveBeenCalled();
+      expect(mockWinningClient.invoke).toHaveBeenCalledTimes(1);
+      expect(actualResult.sessionString).toBe(mockFakeSessionString);
+    });
+  });
+
   describe('authenticate: client release on the remaining error branches', () => {
     it('maps a GetPassword timeout during 2FA to 503 and destroys the client', async () => {
       // Arrange
@@ -1767,132 +1808,21 @@ describe('TelegramService', () => {
       );
     });
 
-    it('destroys a client restored from the auth-state file when sign-in fails', async () => {
-      // Arrange
-      const mockFiles = new Map<string, string>();
-      installInMemoryFs(mockFiles);
-      mockFiles.set(
-        path.join(process.cwd(), 'data', AUTH_STATES_FILE_SUFFIX),
-        JSON.stringify({
-          [inputPhoneNumber]: { phoneCodeHash: 'fake-code-hash', createdAt: Date.now() },
-        }),
-      );
-      mockConfigureClient = (client) => {
-        client.invoke.mockRejectedValue(rpcError('PHONE_CODE_EXPIRED'));
-      };
-
-      try {
-        // Act
-        const actualResult = service.authenticate(inputPhoneNumber, inputPhoneCode);
-
-        // Assert
-        await expect(actualResult).rejects.toBeInstanceOf(BadRequestException);
-        expect(mockCreatedClients).toHaveLength(1);
-        expect(mockCreatedClients[0].destroy).toHaveBeenCalledTimes(1);
-        expect(storedAuthPhones(mockFiles)).toEqual([]);
-      } finally {
-        restoreDefaultFs();
-      }
-    });
-  });
-
-  describe('file-store failures never break the operation', () => {
-    const inputLogSessionString = 'fake-fs-failure-session-value';
-    const expectedFsErrorText = 'Error: fake EACCES';
-
-    function failWritesTo(suffix: string): void {
-      jest.mocked(fs.writeFileSync).mockImplementation((filePath) => {
-        if (String(filePath).endsWith(suffix)) {
-          throw new Error('fake EACCES');
-        }
-      });
-    }
-
-    function expectNoSecretLogged(): void {
-      const actualText = loggedText(loggerSpies);
-      expect(actualText).not.toContain(inputPhoneNumber);
-      expect(actualText).not.toContain(inputPhoneNumber.replace(/\D/g, ''));
-      expect(actualText).not.toContain(inputLogSessionString);
-    }
-
-    afterEach(() => {
-      restoreDefaultFs();
-    });
-
-    it('completes sign-in and keeps the client cached when the session cannot be saved', async () => {
-      // Arrange
-      await service.authenticate(inputPhoneNumber);
-      mockCreatedClients[0].session.save.mockReturnValue(inputLogSessionString);
-      failWritesTo(SESSIONS_FILE_NAME_SUFFIX);
-      clearLoggerSpies(loggerSpies);
-
-      // Act
-      const actualResult = await service.authenticate(inputPhoneNumber, inputPhoneCode);
-
-      // Assert
-      expect(actualResult.sessionString).toBe(inputLogSessionString);
-      expect(loggerSpies.error).toHaveBeenCalledWith(
-        `Failed to save session: ${expectedFsErrorText}`,
-      );
-      await expect(service.checkSession(inputLogSessionString)).resolves.toEqual({
-        status: 'success',
-      });
-      expectNoSecretLogged();
-    });
-
-    it('completes sign-in when the pending auth state cannot be deleted from the file', async () => {
-      // Arrange
-      await service.authenticate(inputPhoneNumber);
-      mockCreatedClients[0].session.save.mockReturnValue(inputLogSessionString);
-      failWritesTo(AUTH_STATES_FILE_SUFFIX);
-      clearLoggerSpies(loggerSpies);
-
-      // Act
-      const actualResult = await service.authenticate(inputPhoneNumber, inputPhoneCode);
-
-      // Assert
-      expect(actualResult.sessionString).toBe(inputLogSessionString);
-      expect(loggerSpies.error).toHaveBeenCalledWith(
-        `Failed to delete auth state: ${expectedFsErrorText}`,
-      );
-      expect(mockCreatedClients[0].destroy).not.toHaveBeenCalled();
-      expectNoSecretLogged();
-    });
-
-    it('still destroys the client on disconnect when the session cannot be deleted from the file', async () => {
+    it('treats a non-Error rejection carrying SESSION_PASSWORD_NEEDED as a failure, not a 2FA prompt', async () => {
       // Arrange
       await service.authenticate(inputPhoneNumber);
       const mockClient = mockCreatedClients[0];
-      mockClient.session.save.mockReturnValue(inputLogSessionString);
-      await service.authenticate(inputPhoneNumber, inputPhoneCode);
-      failWritesTo(SESSIONS_FILE_NAME_SUFFIX);
-      clearLoggerSpies(loggerSpies);
-
-      // Act
-      await service.disconnect(inputLogSessionString);
-
-      // Assert
-      expect(mockClient.destroy).toHaveBeenCalledTimes(1);
-      expect(loggerSpies.error).toHaveBeenCalledWith(
-        `Failed to delete session: ${expectedFsErrorText}`,
-      );
-      await expect(service.checkSession(inputLogSessionString)).resolves.toEqual({
-        status: 'failed',
+      mockClient.invoke.mockRejectedValueOnce({
+        errorMessage: 'SESSION_PASSWORD_NEEDED',
+        message: 'SESSION_PASSWORD_NEEDED',
       });
-      expectNoSecretLogged();
-    });
-
-    it('treats an unparseable auth-state file as empty, so step 2 answers 400', async () => {
-      // Arrange
-      jest.mocked(fs.existsSync).mockImplementation(() => true);
-      jest.mocked(fs.readFileSync).mockImplementation(() => 'fake-not-json{');
 
       // Act
       const actualResult = service.authenticate(inputPhoneNumber, inputPhoneCode);
 
       // Assert
-      await expect(actualResult).rejects.toThrow(CODE_NOT_REQUESTED_PATTERN);
-      expect(mockCreatedClients).toHaveLength(0);
+      await expectHttpError(actualResult, BadGatewayException, TELEGRAM_FAILED_MESSAGE);
+      expect(mockClient.destroy).toHaveBeenCalledTimes(1);
     });
   });
 });

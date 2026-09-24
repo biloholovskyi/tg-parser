@@ -87,3 +87,9 @@ export const RPC_TIMEOUT_CODE = 'TIMEOUT';
 export const CONNECTION_LABEL = 'Connection';
 
 export const SECONDS_IN_HOUR = 3600;
+
+/** MTProto code for a sign-in that must continue with the 2FA password. */
+export const PASSWORD_NEEDED_ERROR = 'SESSION_PASSWORD_NEEDED';
+
+/** Base of the public link to a channel post. */
+export const POST_URL_BASE = 'https://t.me';

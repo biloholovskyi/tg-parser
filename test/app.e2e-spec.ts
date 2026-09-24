@@ -11,6 +11,7 @@ import { API_KEY_HEADER, SESSION_HEADER } from '../src/shared/constants/http.con
 import { configureHttpPipeline } from '../src/shared/utils/http-pipeline';
 import { TelegramService } from '../src/telegram/telegram.service';
 import { TELEGRAM_UNAVAILABLE_MESSAGE } from '../src/telegram/utils/telegram-errors';
+import { closeLifecycleProviders } from './lifecycle-providers';
 
 const HEALTH_ROUTE = '/telegram/health';
 const ME_ROUTE = '/telegram/me';
@@ -31,12 +32,14 @@ const HEALTHCHECK_PATH_PATTERN = /^\s*healthcheck_path\s*=\s*"([^"]+)"/m;
 
 const TELEGRAM_ENV_VARS = ['TELEGRAM_API_ID', 'TELEGRAM_API_HASH'] as const;
 
-/** No real TelegramService is constructed, so nothing touches Telegram or the filesystem. */
+/**
+ * Replaces the TelegramService facade. The real lifecycle providers behind it are still built,
+ * but none of them creates a client unless the facade calls it, so nothing touches Telegram.
+ */
 const mockTelegramService = {
   authenticate: jest.fn(),
   checkSession: jest.fn(),
   getChannelPosts: jest.fn(),
-  disconnect: jest.fn(),
 };
 
 function deleteTelegramEnvVars(): void {
@@ -78,6 +81,7 @@ describe('health probe (e2e)', () => {
   });
 
   afterAll(async () => {
+    await closeLifecycleProviders(app);
     await app.close();
 
     for (const [envVar, originalValue] of originalEnvValues) {

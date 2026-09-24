@@ -45,7 +45,7 @@ describe('withTimeout', () => {
 
   it('does not time out before the deadline', async () => {
     // Arrange
-    let resolveCall: (value: string) => void;
+    let resolveCall: (value: string) => void = () => undefined;
     const inputCall = new Promise<string>((resolve) => {
       resolveCall = resolve;
     });

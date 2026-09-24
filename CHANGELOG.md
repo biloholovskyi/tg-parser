@@ -1,5 +1,8 @@
 [1.4.1] 24.09.2026
 
+- Sessions and pending logins kept in process memory only: the JSON files under data/ are no longer read or written, and a restart requires authenticating again
+- Telegram module split into AuthService, ChannelService, SessionStore, a single client factory and a pure message mapper; behaviour of the endpoints unchanged
+- TypeScript strictNullChecks, noImplicitAny and strictBindCallApply enabled
 - Repository cleanup: one-off root docs removed, deployment guide rewritten for the current API, n8n guides moved to docs/integrations, examples send the session in the x-session-string header, exported posts no longer tracked
 - Test coverage: TelegramService, TelegramController and request DTOs fully unit tested; E2E covers the full auth cycle and proves no real Telegram client is created
 - Service logs go through the NestJS Logger only: one outcome line per request, no phone numbers or session strings, console banned by ESLint in src

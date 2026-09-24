@@ -9,6 +9,7 @@ import { API_KEY_HEADER, REQUEST_BODY_MAX_BYTES } from '../src/shared/constants/
 import { configureHttpPipeline } from '../src/shared/utils/http-pipeline';
 import { AUTH_INPUT_ERRORS } from '../src/telegram/constants';
 import { TelegramService } from '../src/telegram/telegram.service';
+import { closeLifecycleProviders } from './lifecycle-providers';
 
 const AUTH_ROUTE = '/telegram/auth';
 const HEALTH_ROUTE = '/telegram/health';
@@ -45,12 +46,14 @@ const EXPECTED_NEEDS_PASSWORD_RESPONSE = { needsPassword: true, message: 'fake p
 const PHONE_CODE_INVALID_CODE = 'PHONE_CODE_INVALID';
 const EXPECTED_WRONG_CODE_MESSAGE = new Map(AUTH_INPUT_ERRORS).get(PHONE_CODE_INVALID_CODE);
 
-/** No real TelegramService is constructed, so nothing touches Telegram or the filesystem. */
+/**
+ * Replaces the TelegramService facade. The real lifecycle providers behind it are still built,
+ * but none of them creates a client unless the facade calls it, so nothing touches Telegram.
+ */
 const mockTelegramService = {
   authenticate: jest.fn(),
   checkSession: jest.fn(),
   getChannelPosts: jest.fn(),
-  disconnect: jest.fn(),
 };
 
 describe('auth route perimeter (e2e)', () => {
@@ -75,6 +78,7 @@ describe('auth route perimeter (e2e)', () => {
   });
 
   afterAll(async () => {
+    await closeLifecycleProviders(app);
     await app.close();
 
     if (originalApiKeys === undefined) {

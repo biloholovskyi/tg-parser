@@ -7,7 +7,12 @@ import { AppModule } from '../src/app.module';
 import { API_KEYS_ENV_VAR } from '../src/config/api-keys.config';
 import { API_KEY_HEADER, SESSION_HEADER } from '../src/shared/constants/http.constants';
 import { configureHttpPipeline } from '../src/shared/utils/http-pipeline';
+import { AuthService } from '../src/telegram/auth.service';
+import { ChannelService } from '../src/telegram/channel.service';
+import { SessionStore } from '../src/telegram/session-store';
+import { TelegramClientFactory } from '../src/telegram/telegram-client.factory';
 import { TelegramService } from '../src/telegram/telegram.service';
+import { closeLifecycleProviders } from './lifecycle-providers';
 
 /**
  * Replaces only the client constructor with a spy, so any code path that tried to open
@@ -25,18 +30,22 @@ const POSTS_ROUTE = '/telegram/channel/fakechannel/posts';
 
 const HTTP_OK = 200;
 const EXPECTED_AUTH_CALL_COUNT = 2;
+/** One idle sweep in SessionStore, one auth-state sweep in AuthService. */
+const EXPECTED_SWEEP_COUNT = 2;
 
 const INPUT_FAKE_API_KEY = 'fake-e2e-api-key';
 const INPUT_FAKE_PHONE_NUMBER = '+10000000021';
 const INPUT_FAKE_PHONE_CODE = '00000';
 const INPUT_FAKE_SESSION_STRING = 'fake-e2e-session-string';
 
-/** No real TelegramService is constructed, so nothing touches Telegram or the filesystem. */
+/**
+ * Replaces the TelegramService facade. The real lifecycle providers behind it are still built,
+ * but none of them creates a client unless the facade calls it, so nothing touches Telegram.
+ */
 const mockTelegramService = {
   authenticate: jest.fn(),
   checkSession: jest.fn(),
   getChannelPosts: jest.fn(),
-  disconnect: jest.fn(),
 };
 
 describe('no-network guarantee (e2e)', () => {
@@ -62,6 +71,7 @@ describe('no-network guarantee (e2e)', () => {
   });
 
   afterAll(async () => {
+    await closeLifecycleProviders(app);
     await app.close();
 
     if (originalApiKeys === undefined) {
@@ -128,5 +138,39 @@ describe('no-network guarantee (e2e)', () => {
     expect(mockTelegramService.getChannelPosts).toHaveBeenCalledTimes(1);
     expect(jest.isMockFunction(mockTelegramClientConstructor)).toBe(true);
     expect(mockTelegramClientConstructor).not.toHaveBeenCalled();
+  });
+
+  it('builds the real lifecycle providers behind the mock without constructing a GramJS client', () => {
+    // Act
+    const actualProviders = [
+      app.get(TelegramClientFactory),
+      app.get(SessionStore),
+      app.get(AuthService),
+      app.get(ChannelService),
+    ];
+
+    // Assert
+    expect(actualProviders[0]).toBeInstanceOf(TelegramClientFactory);
+    expect(actualProviders[1]).toBeInstanceOf(SessionStore);
+    expect(actualProviders[2]).toBeInstanceOf(AuthService);
+    expect(actualProviders[3]).toBeInstanceOf(ChannelService);
+    expect(jest.isMockFunction(mockTelegramClientConstructor)).toBe(true);
+    expect(mockTelegramClientConstructor).not.toHaveBeenCalled();
+  });
+
+  it('leaves no background sweep running once the lifecycle providers are closed', async () => {
+    // Arrange
+    const mockClearInterval = jest.spyOn(global, 'clearInterval');
+
+    try {
+      // Act
+      await closeLifecycleProviders(app);
+
+      // Assert
+      expect(mockClearInterval).toHaveBeenCalledTimes(EXPECTED_SWEEP_COUNT);
+      expect(mockTelegramClientConstructor).not.toHaveBeenCalled();
+    } finally {
+      mockClearInterval.mockRestore();
+    }
   });
 });

@@ -16,7 +16,7 @@ You are a senior backend engineer specializing in NestJS and Telegram MTProto in
 - Bootstrap: `src/main.ts` — creates the app with `bodyParser: false`, calls `configureHttpPipeline` (body limit, `ValidationPipe`, CORS allowlist) from `src/shared/utils/http-pipeline.ts`, registers process handlers and shutdown hooks, binds `PORT` (default `DEFAULT_PORT` = 8080) on `0.0.0.0`
 - No database, no ORM, no persistence: `TelegramClient` instances live in an in-memory `Map<sessionString, TelegramClient>` and are lost on restart
 - REST surface: `GET /telegram/health`, `POST /telegram/auth`, `GET /telegram/me`, `GET /telegram/channel/:channelUsername/posts`
-- TypeScript is permissive (`strictNullChecks: false`, `noImplicitAny: false`) — write new code to strict semantics anyway
+- TypeScript runs with `strictNullChecks` and `noImplicitAny` on
 - No path aliases; imports are relative
 
 ## Commands

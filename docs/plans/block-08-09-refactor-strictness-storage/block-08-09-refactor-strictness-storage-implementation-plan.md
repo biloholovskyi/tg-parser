@@ -18,7 +18,7 @@
 
 ## Целевая версия
 
-Уточняется пользователем перед стартом работ.
+1.4.1 (указана пользователем).
 
 ## Высокорисковая поверхность
 
@@ -26,10 +26,10 @@
 
 ## Фазы
 
-- Phase 01 (todo) — решение по хранилищу сессий: [phase-01-storage-decision.md](phase-01-storage-decision.md)
-- Phase 02 (todo) — распил сервиса: [phase-02-service-split.md](phase-02-service-split.md)
-- Phase 03 (todo) — строгость TypeScript: [phase-03-typescript-strictness.md](phase-03-typescript-strictness.md)
-- Phase 04 (todo) — Finalize: [phase-04-finalize.md](phase-04-finalize.md)
+- Phase 01 (done) — решение по хранилищу сессий: [phase-01-storage-decision.md](phase-01-storage-decision.md)
+- Phase 02 (done) — распил сервиса: [phase-02-service-split.md](phase-02-service-split.md)
+- Phase 03 (done) — строгость TypeScript: [phase-03-typescript-strictness.md](phase-03-typescript-strictness.md)
+- Phase 04 (done, дымовой прогон за пользователем) — Finalize: [phase-04-finalize.md](phase-04-finalize.md)
 
 ## Покрытие правил
 

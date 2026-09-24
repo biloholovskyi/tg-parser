@@ -2,7 +2,7 @@
 
 NestJS 10 service that wraps GramJS (a Telegram MTProto client) to parse public and private Telegram channels through a personal user account, not a bot. REST API, TypeScript 5 on Node 20+. No database.
 
-Session model, stated accurately: the intended model is process memory only. The current code additionally writes session strings and phone numbers to JSON files under `data/`, against the rules, on a deployment filesystem that is wiped on every deploy. This is an open decision, recorded under Known Deviations in @.claude/rules/telegram.md. Do not extend the file-backed store, and do not rewrite a rule to match it.
+Session model: process memory only, decided in [adr-session-storage.md](docs/plans/block-08-09-refactor-strictness-storage/adr-session-storage.md). Nothing is written to disk; a restart or deploy drops every session and pending login, and callers authenticate again. Adding any persistence is a new user decision, not a code change.
 
 ## Source of Truth
 
@@ -36,7 +36,7 @@ Plugin skills never override a project hard rule. Planning, committing, and test
 ## Architecture
 
 ```
-TelegramController (REST) → TelegramService (GramJS logic) → Telegram MTProto API
+TelegramController (REST) → TelegramService (facade) → AuthService | ChannelService → SessionStore → Telegram MTProto API
 ```
 
 - `GET /telegram/health` — liveness probe and the Railway health check target
@@ -46,11 +46,16 @@ TelegramController (REST) → TelegramService (GramJS logic) → Telegram MTProt
 
 Every route except the health probe requires an `x-api-key` header and is rate limited.
 
-Session model: `TelegramClient` instances are cached in memory in a `SessionClientCache` (`src/telegram/utils/session-client-cache.ts`, a `Map` keyed by `sessionString`) owned by `TelegramService`. Everything is lost on process restart, and the cache is per-process, so horizontal scaling breaks session affinity. The cache is bounded (least recently used entry evicted at the ceiling) and idle clients are swept out; every eviction calls `destroy()` on the client, because every connected client pings Telegram continuously. Details: @.claude/rules/architecture.md and @.claude/rules/runtime-resources.md.
+Session model: `TelegramClient` instances are cached in memory in a `SessionClientCache` (`src/telegram/utils/session-client-cache.ts`, a `Map` keyed by `sessionString`) owned by `SessionStore`, the sole owner of the client lifecycle. Everything is lost on process restart, and the cache is per-process, so horizontal scaling breaks session affinity. The cache is bounded (least recently used entry evicted at the ceiling) and idle clients are swept out; every eviction calls `destroy()` on the client, because every connected client pings Telegram continuously. Details: @.claude/rules/architecture.md and @.claude/rules/runtime-resources.md.
 
 Key source files:
 
-- [src/telegram/telegram.service.ts](src/telegram/telegram.service.ts) — GramJS logic: auth flow, client creation and options, paged message walk and filtering
+- [src/telegram/telegram.service.ts](src/telegram/telegram.service.ts) — facade for the controller: delegates, session check, shutdown order
+- [src/telegram/auth.service.ts](src/telegram/auth.service.ts) — multi-step auth flow and pending login attempts (memory only, TTL-swept)
+- [src/telegram/channel.service.ts](src/telegram/channel.service.ts) — paged message walk, time window, walk ceiling
+- [src/telegram/session-store.ts](src/telegram/session-store.ts) — sole owner of client connect, cache and release
+- [src/telegram/telegram-client.factory.ts](src/telegram/telegram-client.factory.ts) — the only place a `TelegramClient` is constructed, with explicit options
+- [src/telegram/utils/message.mapper.ts](src/telegram/utils/message.mapper.ts) — pure MTProto message to `TelegramPost` mapping
 - [src/telegram/constants.ts](src/telegram/constants.ts) — cache ceilings and TTLs, timeouts, GramJS client options, walk limits, MTProto error-code lists
 - [src/telegram/utils/session-client-cache.ts](src/telegram/utils/session-client-cache.ts) — bounded, idle-swept client cache; eviction releases the client
 - [src/telegram/utils/telegram-errors.ts](src/telegram/utils/telegram-errors.ts) — maps Telegram failures to HTTP exceptions and log-safe error descriptions
