@@ -122,9 +122,11 @@ attaches real process handlers. See also [[project-test-run-environment]].
 
 19. A "timer cleared" proof with fake timers must not advance past the timeout itself: an uncleared
     timer fires and `jest.getTimerCount()` reads 0 anyway. Advance only the retry waits and then check
-    the count, or spy `setTimeout`/`clearTimeout` and assert every armed timeout id was cleared. For
-    `fetch`-based clients (digest `GrokClient`) mock with `jest.spyOn(global, 'fetch')` and real
-    `new Response(...)`; a hang-until-abort fake listens on `init.signal` and rejects with an
+    the count, or spy `setTimeout`/`clearTimeout` and assert every armed timeout id was cleared. Digest
+    `GrokClient` imports `{ Agent, fetch }` from `undici` (own dispatcher), so a global-fetch spy no longer
+    sees its calls: `jest.mock('undici', () => ({ fetch: jest.fn(), Agent: jest.fn() }))`, then `mockReset()`
+    both in `beforeEach` and give `Agent` an implementation returning `{ close: jest.fn() }` (the agent is a
+    class field, built in the constructor); answers can be plain `{ ok, status, json }` objects; a hang-until-abort fake listens on `init.signal` and rejects with an
     `AbortError`-named error. Verified mutations in a scratch copy (item 13) catch both a missing
     `clearTimeout` and a body parse moved out of the guarded `try`.
 

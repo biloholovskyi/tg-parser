@@ -28,7 +28,7 @@ A leaked resource here is not a latency problem, it is a recurring bill: a `Tele
 - SESSION_STORE_TTL_S = 30 days (a stored session unused this long expires in Redis; every use extends it) — `src/telegram/constants.ts`
 - REDIS_COMMAND_TIMEOUT_MS = 5000, REDIS_CONNECT_TIMEOUT_MS = 10_000, REDIS_MAX_RETRIES = 2 (per command), reconnect delay REDIS_RECONNECT_STEP_MS per attempt up to REDIS_RECONNECT_MAX_DELAY_MS = 30_000 — `src/redis/redis.constants.ts`
 - DIGEST_MAX_CHANNELS = 50, DIGEST_MAX_POSTS = 600, DIGEST_WINDOW_HOURS = 24 — `src/config/digest.config.ts`, `src/digest/constants.ts`
-- GROK_CALL_TIMEOUT_MS = 180_000 with GROK_MAX_RETRIES = 2; TRANSLATION_BUDGET_MS = 60 min (no new translation batch after it, nor after the first batch Grok fails); BOT_CALL_TIMEOUT_MS = 30_000 with BOT_MAX_RETRIES = 3 and BOT_MAX_RETRY_AFTER_S = 60 — `src/digest/constants.ts`
+- GROK_CALL_TIMEOUT_MS = 180_000 with GROK_MAX_RETRIES = 2 for translation batches and coverage follow-ups; GROK_SUMMARY_TIMEOUT_MS = 30 min for the one summary request, GROK_SUMMARY_MAX_RETRIES = 1 and no retry after its timeout; Grok calls go through an own undici `Agent` (headers and body timeouts = GROK_SUMMARY_TIMEOUT_MS) closed in `onModuleDestroy`; TRANSLATION_BUDGET_MS = 60 min (no new translation batch after it, nor after the first batch Grok fails); BOT_CALL_TIMEOUT_MS = 30_000 with BOT_MAX_RETRIES = 3 and BOT_MAX_RETRY_AFTER_S = 60 — `src/digest/constants.ts`
 - RUNTIME_INSTANCE_COUNT = 1 (the in-memory client cache, the single-run digest flag and the scheduled job have no cross-instance coordination)
 - RUNTIME_FILESYSTEM = ephemeral (reset on every deploy and restart)
 

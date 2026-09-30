@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   DIGEST_FALLBACK_THESIS_CHARS,
+  GROK_SUMMARY_MAX_RETRIES,
+  GROK_SUMMARY_TIMEOUT_MS,
   SUMMARY_COVERAGE_RETRIES,
   SUMMARY_POST_MAX_CHARS,
 } from './constants';
@@ -59,6 +61,9 @@ export class SummaryService {
       schemaName: 'digest',
       schema: SUMMARY_SCHEMA,
       isValid: isSummaryAnswer,
+      timeoutMs: GROK_SUMMARY_TIMEOUT_MS,
+      maxRetries: GROK_SUMMARY_MAX_RETRIES,
+      isTimeoutRetryable: false,
     });
     return answer.topics.map(toTopic);
   }

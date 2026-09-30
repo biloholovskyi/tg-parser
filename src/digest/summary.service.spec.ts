@@ -1,6 +1,8 @@
 import { Logger } from '@nestjs/common';
 import {
   DIGEST_FALLBACK_THESIS_CHARS,
+  GROK_SUMMARY_MAX_RETRIES,
+  GROK_SUMMARY_TIMEOUT_MS,
   SUMMARY_COVERAGE_RETRIES,
   SUMMARY_POST_MAX_CHARS,
 } from './constants';
@@ -115,7 +117,36 @@ describe('SummaryService', () => {
         schemaName: 'digest',
         schema: SUMMARY_SCHEMA,
         isValid: isSummaryAnswer,
+        timeoutMs: GROK_SUMMARY_TIMEOUT_MS,
+        maxRetries: GROK_SUMMARY_MAX_RETRIES,
+        isTimeoutRetryable: false,
       });
+    });
+
+    it('gives only the first request the long timeout, its own retry limit and no timeout retry', async () => {
+      // Arrange
+      mockCompleteJson
+        .mockResolvedValueOnce(summary(topic(['p1'])))
+        .mockResolvedValue(coverage([]));
+      const inputPosts = [buildPost(1), buildPost(2), buildPost(3)];
+
+      // Act
+      await service.summarize(inputPosts);
+
+      // Assert
+      expect(mockCompleteJson).toHaveBeenCalledTimes(TOTAL_CALLS_WITH_RETRIES);
+      const [actualFirst, ...actualFollowUps] = mockCompleteJson.mock.calls.map(
+        ([request]) => request,
+      );
+      expect(actualFirst.timeoutMs).toBe(GROK_SUMMARY_TIMEOUT_MS);
+      expect(actualFirst.maxRetries).toBe(GROK_SUMMARY_MAX_RETRIES);
+      expect(actualFirst.isTimeoutRetryable).toBe(false);
+      for (const actualFollowUp of actualFollowUps) {
+        expect(actualFollowUp.schemaName).toBe('digest_completion');
+        expect(actualFollowUp).not.toHaveProperty('timeoutMs');
+        expect(actualFollowUp).not.toHaveProperty('maxRetries');
+        expect(actualFollowUp).not.toHaveProperty('isTimeoutRetryable');
+      }
     });
 
     it('cuts a long translation to SUMMARY_POST_MAX_CHARS', async () => {

@@ -10,8 +10,17 @@ export const POST_REF_PREFIX = 'p';
 /** xAI chat completions endpoint (OpenAI-compatible). */
 export const GROK_CHAT_COMPLETIONS_URL = 'https://api.x.ai/v1/chat/completions';
 
-/** Upper bound for one Grok call; a whole-day summary is a long generation. */
+/** Upper bound for one ordinary Grok call: a translation batch or a coverage follow-up. */
 export const GROK_CALL_TIMEOUT_MS = 180_000;
+
+/**
+ * Upper bound for the one whole-day summary request, a long generation. It is not retried after
+ * a timeout: the same request would only time out again.
+ */
+export const GROK_SUMMARY_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Retries of the summary request after a fast failure (429, 5xx, network, unusable answer). */
+export const GROK_SUMMARY_MAX_RETRIES = 1;
 
 /** Extra attempts after the first one, only for 429, 5xx, timeouts and unusable answers. */
 export const GROK_MAX_RETRIES = 2;
