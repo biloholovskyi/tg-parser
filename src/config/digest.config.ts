@@ -6,6 +6,7 @@ export const DIGEST_CRON_ENV_VAR = 'DIGEST_CRON';
 export const DIGEST_TIMEZONE_ENV_VAR = 'DIGEST_TIMEZONE';
 export const GROK_API_KEY_ENV_VAR = 'GROK_API_KEY';
 export const GROK_MODEL_ENV_VAR = 'GROK_MODEL';
+export const GROK_REASONING_EFFORT_ENV_VAR = 'GROK_REASONING_EFFORT';
 export const TELEGRAM_BOT_TOKEN_ENV_VAR = 'TELEGRAM_BOT_TOKEN';
 export const TELEGRAM_BOT_CHAT_ID_ENV_VAR = 'TELEGRAM_BOT_CHAT_ID';
 
@@ -14,6 +15,12 @@ export const DIGEST_CRON_DEFAULT = '0 23 * * *';
 export const DIGEST_TIMEZONE_DEFAULT = 'Europe/Kyiv';
 /** The model xAI recommends for general text work (docs.x.ai, checked 25.09.2026). */
 export const GROK_MODEL_DEFAULT = 'grok-4.6';
+
+/** Reasoning levels xAI accepts, plus `off`: the parameter is not sent (for non-reasoning models). */
+export const GROK_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'off'] as const;
+export type GrokReasoningEffort = (typeof GROK_REASONING_EFFORTS)[number];
+/** Translation and grouping need little thinking; the model's own default (`high`) takes minutes. */
+export const GROK_REASONING_EFFORT_DEFAULT: GrokReasoningEffort = 'low';
 
 /** Upper bound on channels read per run; the rest of the list is ignored with a warning. */
 export const DIGEST_MAX_CHANNELS = 50;
@@ -27,6 +34,7 @@ export interface DigestConfig {
   timezone: string;
   grokApiKey: string;
   grokModel: string;
+  grokReasoningEffort: GrokReasoningEffort;
   botToken: string;
   botChatId: string;
   /** True when channels, the Grok key and the bot target are all present. */
@@ -47,6 +55,7 @@ export function getDigestConfig(): DigestConfig {
     timezone: readEnv(DIGEST_TIMEZONE_ENV_VAR) || DIGEST_TIMEZONE_DEFAULT,
     grokApiKey: readEnv(GROK_API_KEY_ENV_VAR),
     grokModel: readEnv(GROK_MODEL_ENV_VAR) || GROK_MODEL_DEFAULT,
+    grokReasoningEffort: parseReasoningEffort(readEnv(GROK_REASONING_EFFORT_ENV_VAR)),
     botToken: readEnv(TELEGRAM_BOT_TOKEN_ENV_VAR),
     botChatId: readEnv(TELEGRAM_BOT_CHAT_ID_ENV_VAR),
   };
@@ -55,6 +64,22 @@ export function getDigestConfig(): DigestConfig {
     logger.warn(`Digest disabled, not set: ${missing.join(', ')}`);
   }
   return { ...config, isConfigured: missing.length === 0 };
+}
+
+/** An unknown value falls back to the default with one warning; the value itself is not secret. */
+function parseReasoningEffort(rawEffort: string): GrokReasoningEffort {
+  if (!rawEffort) {
+    return GROK_REASONING_EFFORT_DEFAULT;
+  }
+  const effort = GROK_REASONING_EFFORTS.find((value) => value === rawEffort.toLowerCase());
+  if (!effort) {
+    logger.warn(
+      `${GROK_REASONING_EFFORT_ENV_VAR}="${rawEffort}" is not one of ` +
+        `${GROK_REASONING_EFFORTS.join(', ')}: using ${GROK_REASONING_EFFORT_DEFAULT}`,
+    );
+    return GROK_REASONING_EFFORT_DEFAULT;
+  }
+  return effort;
 }
 
 function readEnv(name: string): string {

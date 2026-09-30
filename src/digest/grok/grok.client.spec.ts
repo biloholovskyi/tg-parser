@@ -38,6 +38,7 @@ const mockConfig: DigestConfig = {
   timezone: 'Europe/Kyiv',
   grokApiKey: inputApiKey,
   grokModel: inputModel,
+  grokReasoningEffort: 'low',
   botToken: 'fake-bot-token',
   botChatId: 'fake-chat-id',
   isConfigured: true,
@@ -141,6 +142,7 @@ describe('GrokClient', () => {
       expect(actualInit?.signal).toBeInstanceOf(AbortSignal);
       expect(JSON.parse(String(actualInit?.body))).toEqual({
         model: inputModel,
+        reasoning_effort: 'low',
         stream: false,
         messages: [
           { role: 'system', content: inputSystem },
@@ -151,6 +153,36 @@ describe('GrokClient', () => {
           json_schema: { name: 'fake_schema', schema: { type: 'object' }, strict: true },
         },
       });
+    });
+
+    it.each(['low', 'medium', 'high', 'xhigh'] as const)(
+      'sends reasoning_effort=%s when that effort is configured',
+      async (inputEffort) => {
+        // Arrange
+        client = new GrokClient({ ...mockConfig, grokReasoningEffort: inputEffort });
+        fetchSpy.mockResolvedValueOnce(contentResponse(JSON.stringify({ value: 'ok' })));
+
+        // Act
+        await settle();
+
+        // Assert
+        const actualBody = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
+        expect(actualBody.reasoning_effort).toBe(inputEffort);
+      },
+    );
+
+    it('omits reasoning_effort entirely when the effort is off', async () => {
+      // Arrange
+      client = new GrokClient({ ...mockConfig, grokReasoningEffort: 'off' });
+      fetchSpy.mockResolvedValueOnce(contentResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      await settle();
+
+      // Assert
+      const actualBody = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
+      expect(actualBody).not.toHaveProperty('reasoning_effort');
+      expect(actualBody.model).toBe(inputModel);
     });
   });
 

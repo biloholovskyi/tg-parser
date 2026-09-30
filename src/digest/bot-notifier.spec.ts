@@ -34,6 +34,7 @@ const mockConfig: DigestConfig = {
   timezone: 'Europe/Kyiv',
   grokApiKey: 'fake-grok-key',
   grokModel: 'fake-model',
+  grokReasoningEffort: 'low',
   botToken: INPUT_FAKE_TOKEN,
   botChatId: INPUT_FAKE_CHAT_ID,
   isConfigured: true,

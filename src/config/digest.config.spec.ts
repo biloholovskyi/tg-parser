@@ -9,6 +9,9 @@ import {
   GROK_API_KEY_ENV_VAR,
   GROK_MODEL_DEFAULT,
   GROK_MODEL_ENV_VAR,
+  GROK_REASONING_EFFORT_DEFAULT,
+  GROK_REASONING_EFFORT_ENV_VAR,
+  GROK_REASONING_EFFORTS,
   TELEGRAM_BOT_CHAT_ID_ENV_VAR,
   TELEGRAM_BOT_TOKEN_ENV_VAR,
   getDigestConfig,
@@ -20,6 +23,7 @@ const ALL_ENV_VARS = [
   DIGEST_TIMEZONE_ENV_VAR,
   GROK_API_KEY_ENV_VAR,
   GROK_MODEL_ENV_VAR,
+  GROK_REASONING_EFFORT_ENV_VAR,
   TELEGRAM_BOT_TOKEN_ENV_VAR,
   TELEGRAM_BOT_CHAT_ID_ENV_VAR,
 ];
@@ -234,10 +238,119 @@ describe('getDigestConfig', () => {
         timezone: expectedTimezone,
         grokApiKey: inputGrokKey,
         grokModel: expectedModel,
+        grokReasoningEffort: GROK_REASONING_EFFORT_DEFAULT,
         botToken: inputBotToken,
         botChatId: inputBotChatId,
         isConfigured: true,
       });
+    });
+  });
+
+  describe('grokReasoningEffort', () => {
+    it('defaults to low without a warning when unset', () => {
+      // Arrange
+      setCompleteEnv();
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(GROK_REASONING_EFFORT_DEFAULT).toBe('low');
+      expect(actualConfig.grokReasoningEffort).toBe(GROK_REASONING_EFFORT_DEFAULT);
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
+
+    it('treats a whitespace-only value as unset', () => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_REASONING_EFFORT_ENV_VAR] = '   ';
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.grokReasoningEffort).toBe(GROK_REASONING_EFFORT_DEFAULT);
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
+
+    it('allows exactly low, medium, high, xhigh and off', () => {
+      // Assert
+      expect([...GROK_REASONING_EFFORTS]).toEqual(['low', 'medium', 'high', 'xhigh', 'off']);
+    });
+
+    it.each([...GROK_REASONING_EFFORTS])('accepts %s without a warning', (inputEffort) => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_REASONING_EFFORT_ENV_VAR] = inputEffort;
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.grokReasoningEffort).toBe(inputEffort);
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['HIGH', 'high'],
+      ['XHigh', 'xhigh'],
+      ['Off', 'off'],
+      [' Medium ', 'medium'],
+    ])('accepts %p case-insensitively and trimmed as %s', (inputRaw, expectedEffort) => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_REASONING_EFFORT_ENV_VAR] = inputRaw;
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.grokReasoningEffort).toBe(expectedEffort);
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the default with one warning naming the variable for an unknown value', () => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_REASONING_EFFORT_ENV_VAR] = 'maximum';
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.grokReasoningEffort).toBe(GROK_REASONING_EFFORT_DEFAULT);
+      expect(mockWarn).toHaveBeenCalledTimes(1);
+      expect(warnings()[0]).toContain(GROK_REASONING_EFFORT_ENV_VAR);
+      expect(warnings()[0]).toContain('maximum');
+      expect(warnings()[0]).toContain(GROK_REASONING_EFFORT_DEFAULT);
+    });
+
+    it('never puts a secret into the unknown-effort warning', () => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_REASONING_EFFORT_ENV_VAR] = 'bogus';
+
+      // Act
+      getDigestConfig();
+
+      // Assert
+      const actualText = warnings().join(' | ');
+      expect(mockWarn).toHaveBeenCalledTimes(1);
+      expect(actualText).not.toContain(inputGrokKey);
+      expect(actualText).not.toContain(inputBotToken);
+      expect(actualText).not.toContain(inputBotChatId);
+    });
+
+    it('does not let an invalid effort affect isConfigured', () => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_REASONING_EFFORT_ENV_VAR] = 'bogus';
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.isConfigured).toBe(true);
     });
   });
 

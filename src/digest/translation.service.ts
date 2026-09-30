@@ -25,6 +25,7 @@ export class TranslationService {
   constructor(private readonly grok: GrokClient) {}
 
   async translate(posts: readonly DigestPost[]): Promise<TranslationResult> {
+    const startedAt = Date.now();
     const withText = posts.filter((post) => post.hasText);
     const batches = batchBySize(
       withText,
@@ -32,7 +33,7 @@ export class TranslationService {
       GROK_TRANSLATE_BATCH_CHARS,
     );
     const translations = new Map<string, string>();
-    const deadline = Date.now() + TRANSLATION_BUDGET_MS;
+    const deadline = startedAt + TRANSLATION_BUDGET_MS;
     for (const batch of batches) {
       if (Date.now() >= deadline || !(await this.translateBatch(batch, translations))) {
         break;
@@ -44,7 +45,7 @@ export class TranslationService {
     ).length;
     this.logger.log(
       `Translated ${withText.length - untranslatedCount} of ${withText.length} posts ` +
-        `in ${batches.length} batches`,
+        `in ${batches.length} batches, ${Date.now() - startedAt} ms`,
     );
     return { posts: translated, untranslatedCount };
   }

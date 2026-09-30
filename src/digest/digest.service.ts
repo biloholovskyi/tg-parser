@@ -99,7 +99,9 @@ export class DigestService {
   private async buildReport(runAt: Date): Promise<DigestReport> {
     const collected = await this.collector.collect(this.config.channels, DIGEST_WINDOW_HOURS);
     const { kept, skippedCount } = limitPosts(collected.posts, DIGEST_MAX_POSTS);
+    this.logger.log(`Digest: collected ${kept.length} posts, translating`);
     const { posts, untranslatedCount } = await this.translation.translate(kept);
+    this.logger.log('Digest: summarizing');
     const base = { runAt, timezone: this.config.timezone, collected, posts, untranslatedCount };
     try {
       const { topics, fallbackTopicCount } = await this.summary.summarize(posts);

@@ -185,6 +185,7 @@ Railway via [railway.toml](railway.toml): RAILPACK builder, `npm run start:prod`
 | `DIGEST_TIMEZONE` | Time zone of the schedule, default `Europe/Kyiv` |
 | `GROK_API_KEY` | xAI API key for translation and summary |
 | `GROK_MODEL` | xAI model, default `grok-4.6` |
+| `GROK_REASONING_EFFORT` | `low` (default), `medium`, `high`, `xhigh`, or `off` to omit the parameter for non-reasoning models; an unknown value falls back to `low` with a warning |
 | `TELEGRAM_BOT_TOKEN` | Token of the bot that delivers the digest |
 | `TELEGRAM_BOT_CHAT_ID` | Chat the bot sends the digest to |
 

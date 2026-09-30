@@ -22,6 +22,7 @@ function buildConfig(overrides: Partial<DigestConfig> = {}): DigestConfig {
     timezone: INPUT_TIMEZONE,
     grokApiKey: 'fake-grok-key',
     grokModel: 'fake-model',
+    grokReasoningEffort: 'low',
     botToken: 'fake-bot-token',
     botChatId: '-100000',
     isConfigured: true,

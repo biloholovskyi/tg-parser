@@ -29,7 +29,7 @@ railway up
 - `CORS_ALLOWED_ORIGINS` — разрешённые браузерные источники через запятую; пусто — браузерные запросы запрещены, `*` игнорируется
 - `REDIS_URL` и `SESSION_ENCRYPTION_KEY` — хранение сессий в Redis, чтобы они переживали перезапуск; пошагово — [docs/deployment/railway-redis.md](docs/deployment/railway-redis.md)
 - `DIGEST_CHANNELS`, `GROK_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_CHAT_ID` — ежедневный дайджест; без любой из них дайджест выключен, и при старте в логе одно предупреждение с именами недостающих переменных
-- `DIGEST_CRON` (по умолчанию `0 23 * * *`), `DIGEST_TIMEZONE` (по умолчанию `Europe/Kyiv`), `GROK_MODEL` (по умолчанию `grok-4.6`) — необязательно
+- `DIGEST_CRON` (по умолчанию `0 23 * * *`), `DIGEST_TIMEZONE` (по умолчанию `Europe/Kyiv`), `GROK_MODEL` (по умолчанию `grok-4.6`), `GROK_REASONING_EFFORT` (по умолчанию `low`: быстрее и дешевле; `medium`, `high`, `xhigh` — дольше и глубже; `off` — для моделей без рассуждений) — необязательно
 
 `PORT` задавать не нужно: без него сервис слушает 8080, это совпадает с `internal_port` в `railway.toml`.
 

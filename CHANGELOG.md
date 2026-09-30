@@ -1,5 +1,6 @@
-[1.5.0] 26.09.2026
+[1.5.0] 30.09.2026
 
+- Grok reasoning effort set by GROK_REASONING_EFFORT, low by default, so a digest takes minutes instead of half an hour; the log shows when translation and summary start and how long each took
 - Daily digest: at 23:00 Europe/Kyiv (DIGEST_CRON, DIGEST_TIMEZONE) posts of the last 24 hours from DIGEST_CHANNELS are translated into Russian and folded by Grok into dry topic theses with links to every post, then sent to a Telegram bot; every post is accounted for, the footer reports N of N
 - POST /digest/run starts a digest now (202, 409 while running, 503 when not configured); PUT /digest/session marks the session the digest reads channels with
 - Issued sessions stored in Redis, encrypted with AES-256-GCM and keyed by SHA-256 (REDIS_URL, SESSION_ENCRYPTION_KEY): a restart or deploy no longer requires authenticating again; without Redis the service keeps sessions in memory only

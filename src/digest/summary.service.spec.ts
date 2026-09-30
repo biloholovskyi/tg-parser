@@ -18,6 +18,8 @@ const LOGGER_LEVELS = ['log', 'error', 'warn', 'debug', 'verbose', 'fatal'] as c
 const BASE_DATE_MS = Date.UTC(2026, 0, 1);
 const SECRET_MARKER = 'SECRET-TRANSLATED-BODY';
 const ORIGINAL_MARKER = 'SECRET-ORIGINAL-BODY';
+/** Fake time the first Grok call takes in the log-line test. */
+const INPUT_ELAPSED_MS = 4321;
 const REF_PATTERN = /^\[(p\d+)\] /gm;
 const TOPIC_NUMBER_OUT_OF_RANGE = 99;
 const TOTAL_CALLS_WITH_RETRIES = 1 + SUMMARY_COVERAGE_RETRIES;
@@ -83,6 +85,7 @@ describe('SummaryService', () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
   });
 
@@ -399,10 +402,14 @@ describe('SummaryService', () => {
   });
 
   describe('logging', () => {
-    it('logs one line with counts and no post text', async () => {
+    it('logs one line with counts, the elapsed time and no post text', async () => {
       // Arrange
+      jest.useFakeTimers({ now: BASE_DATE_MS });
       mockCompleteJson
-        .mockResolvedValueOnce(summary(topic(['p1'])))
+        .mockImplementationOnce(async () => {
+          jest.setSystemTime(BASE_DATE_MS + INPUT_ELAPSED_MS);
+          return summary(topic(['p1']));
+        })
         .mockResolvedValue(coverage([]));
 
       // Act
@@ -412,7 +419,8 @@ describe('SummaryService', () => {
       expect(logCallCount()).toBe(1);
       const actualLog = loggedText();
       expect(actualLog).toBe(
-        `Summary: 2 topics from 2 posts, coverage retries=${SUMMARY_COVERAGE_RETRIES}, fallback=1`,
+        `Summary: 2 topics from 2 posts, coverage retries=${SUMMARY_COVERAGE_RETRIES}, ` +
+          `fallback=1, ${INPUT_ELAPSED_MS} ms`,
       );
       expect(actualLog).not.toContain(SECRET_MARKER);
       expect(actualLog).not.toContain(ORIGINAL_MARKER);

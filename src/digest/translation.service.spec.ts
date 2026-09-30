@@ -21,6 +21,8 @@ const BASE_DATE_MS = Date.UTC(2026, 0, 1);
 /** Posts at the per-post cap; enough of them to need more than one batch. */
 const LONG_POST_COUNT = Math.ceil((2 * GROK_TRANSLATE_BATCH_CHARS) / DIGEST_POST_MAX_CHARS) + 1;
 const SECRET_MARKER = 'SECRET-POST-BODY';
+/** Fake time one Grok call takes in the log-line test. */
+const INPUT_ELAPSED_MS = 1234;
 
 function buildPost(index: number, text = `fake original ${index} ${SECRET_MARKER}`): DigestPost {
   return {
@@ -100,6 +102,7 @@ describe('TranslationService', () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
   });
 
@@ -442,9 +445,16 @@ describe('TranslationService', () => {
     expect(actual.untranslatedCount).toBe(1);
   });
 
-  it('logs one line with counts only, never post text', async () => {
+  it('logs one line with counts and the elapsed time only, never post text', async () => {
     // Arrange
-    mockCompleteJson.mockImplementation(answerAll(new Set(['p2'])));
+    jest.useFakeTimers({ now: BASE_DATE_MS });
+    const skipRefs = new Set(['p2']);
+    mockCompleteJson
+      .mockImplementationOnce(async (request) => {
+        jest.setSystemTime(BASE_DATE_MS + INPUT_ELAPSED_MS);
+        return answerAll(skipRefs)(request);
+      })
+      .mockImplementation(answerAll(skipRefs));
     const inputPosts = [buildPost(1), buildPost(2), buildMediaPost(3)];
 
     // Act
@@ -453,7 +463,7 @@ describe('TranslationService', () => {
     // Assert
     expect(logCallCount()).toBe(1);
     const actualLog = loggedText();
-    expect(actualLog).toBe('Translated 1 of 2 posts in 1 batches');
+    expect(actualLog).toBe(`Translated 1 of 2 posts in 1 batches, ${INPUT_ELAPSED_MS} ms`);
     expect(actualLog).not.toContain(SECRET_MARKER);
     expect(actualLog).not.toContain('перевод');
   });

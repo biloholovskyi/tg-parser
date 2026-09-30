@@ -35,6 +35,10 @@ const SECRET_TRANSLATED = 'SECRET-TRANSLATED-POST-BODY';
 const BASE_DATE_MS = Date.UTC(2026, 0, 1);
 const FLUSH_ROUNDS = 20;
 const EXTRA_POSTS = 5;
+/** Two progress lines plus the outcome line. */
+const EXPECTED_SUCCESS_LOG_LINES = 3;
+/** Fake duration of a run in the exact outcome-line test. */
+const INPUT_ELAPSED_MS = 2468;
 const SESSION_REASON = 'Сессия дайджеста не задана или отозвана';
 const FLOOD_REASON = 'Telegram ограничил частоту запросов';
 const UNAVAILABLE_REASON = 'Telegram или хранилище сессий недоступны';
@@ -104,6 +108,7 @@ function buildConfig(isConfigured = true): DigestConfig {
     timezone: 'Europe/Kyiv',
     grokApiKey: 'fake-grok-key',
     grokModel: 'fake-model',
+    grokReasoningEffort: 'low',
     botToken: INPUT_FAKE_TOKEN,
     botChatId: '-100000',
     isConfigured,
@@ -160,6 +165,7 @@ describe('DigestService', () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
   });
 
@@ -262,7 +268,7 @@ describe('DigestService', () => {
   });
 
   describe('runScheduled', () => {
-    it('runs to the end and writes exactly one outcome line', async () => {
+    it('runs to the end and writes two progress lines and one outcome line', async () => {
       // Arrange
       const service = createService();
 
@@ -271,10 +277,31 @@ describe('DigestService', () => {
 
       // Assert
       expect(mockSend).toHaveBeenCalledTimes(1);
-      expect(allLogCalls()).toHaveLength(1);
-      expect(loggerSpies.log).toHaveBeenCalledTimes(1);
-      expect(String(loggerSpies.log.mock.calls[0][0])).toMatch(
+      expect(allLogCalls()).toHaveLength(EXPECTED_SUCCESS_LOG_LINES);
+      expect(loggerSpies.log).toHaveBeenCalledTimes(EXPECTED_SUCCESS_LOG_LINES);
+      const actualLines = loggerSpies.log.mock.calls.map((call: unknown[]) => String(call[0]));
+      expect(actualLines[0]).toBe('Digest: collected 3 posts, translating');
+      expect(actualLines[1]).toBe('Digest: summarizing');
+      expect(actualLines[2]).toMatch(
         /^Digest scheduled: 3 posts, 1 topics, 2 channels, 1 messages, \d+ ms$/,
+      );
+    });
+
+    it('writes the exact elapsed time in the outcome line', async () => {
+      // Arrange
+      jest.useFakeTimers({ now: BASE_DATE_MS });
+      mockSend.mockImplementationOnce(async () => {
+        jest.setSystemTime(BASE_DATE_MS + INPUT_ELAPSED_MS);
+      });
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      const actualLines = loggerSpies.log.mock.calls.map((call: unknown[]) => String(call[0]));
+      expect(actualLines[actualLines.length - 1]).toBe(
+        `Digest scheduled: 3 posts, 1 topics, 2 channels, 1 messages, ${INPUT_ELAPSED_MS} ms`,
       );
     });
 
@@ -377,6 +404,69 @@ describe('DigestService', () => {
     });
   });
 
+  describe('progress lines', () => {
+    function logIndexOf(line: string): number {
+      return loggerSpies.log.mock.calls.findIndex((call: unknown[]) => call[0] === line);
+    }
+
+    it('logs the collected count before translation starts', async () => {
+      // Arrange
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      const actualIndex = logIndexOf('Digest: collected 3 posts, translating');
+      expect(actualIndex).toBe(0);
+      expect(loggerSpies.log.mock.invocationCallOrder[actualIndex]).toBeLessThan(
+        mockTranslate.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('logs summarizing after translation and before the summary starts', async () => {
+      // Arrange
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      const actualIndex = logIndexOf('Digest: summarizing');
+      const actualOrder = loggerSpies.log.mock.invocationCallOrder[actualIndex];
+      expect(actualOrder).toBeGreaterThan(mockTranslate.mock.invocationCallOrder[0]);
+      expect(actualOrder).toBeLessThan(mockSummarize.mock.invocationCallOrder[0]);
+    });
+
+    it('counts the posts kept after DIGEST_MAX_POSTS, not the collected total', async () => {
+      // Arrange
+      inputPosts = Array.from({ length: DIGEST_MAX_POSTS + EXTRA_POSTS }, (_, index) =>
+        buildPost(index + 1),
+      );
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(logIndexOf(`Digest: collected ${DIGEST_MAX_POSTS} posts, translating`)).toBe(0);
+    });
+
+    it('logs only the collected line before a translation failure', async () => {
+      // Arrange
+      mockTranslate.mockRejectedValueOnce(new Error('fake translate failure'));
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      const actualLines = loggerSpies.log.mock.calls.map((call: unknown[]) => String(call[0]));
+      expect(actualLines).toEqual(['Digest: collected 3 posts, translating']);
+      expect(mockSummarize).not.toHaveBeenCalled();
+    });
+  });
+
   describe('failure notice', () => {
     it.each([
       [HttpStatus.UNAUTHORIZED, SESSION_REASON],
@@ -434,7 +524,11 @@ describe('DigestService', () => {
       expect(mockSend).toHaveBeenCalledTimes(2);
       expect(mockSend.mock.calls[1][0][0]).toContain(GENERIC_REASON);
       expect(loggerSpies.error).toHaveBeenCalledTimes(1);
-      expect(loggerSpies.log).not.toHaveBeenCalled();
+      const actualLines = loggerSpies.log.mock.calls.map((call: unknown[]) => String(call[0]));
+      expect(actualLines).toEqual([
+        'Digest: collected 3 posts, translating',
+        'Digest: summarizing',
+      ]);
     });
 
     it('only logs when the failure notice itself cannot be delivered', async () => {

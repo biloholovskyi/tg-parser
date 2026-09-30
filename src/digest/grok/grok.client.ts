@@ -75,8 +75,10 @@ export class GrokClient {
   }
 
   private buildBody<T>(request: GrokJsonRequest<T>): Record<string, unknown> {
+    const { grokReasoningEffort } = this.config;
     return {
       model: this.config.grokModel,
+      ...(grokReasoningEffort === 'off' ? {} : { reasoning_effort: grokReasoningEffort }),
       stream: false,
       messages: [
         { role: 'system', content: request.system },

@@ -28,6 +28,7 @@ export class SummaryService {
   constructor(private readonly grok: GrokClient) {}
 
   async summarize(posts: readonly TranslatedPost[]): Promise<SummaryResult> {
+    const startedAt = Date.now();
     const withText = posts.filter((post) => post.hasText);
     if (withText.length === 0) {
       return { topics: [], fallbackTopicCount: 0 };
@@ -46,7 +47,7 @@ export class SummaryService {
     const fallback = findMissingRefs(topics, refs).map((ref) => fallbackTopic(withText, ref));
     this.logger.log(
       `Summary: ${topics.length + fallback.length} topics from ${withText.length} posts, ` +
-        `coverage retries=${retries}, fallback=${fallback.length}`,
+        `coverage retries=${retries}, fallback=${fallback.length}, ${Date.now() - startedAt} ms`,
     );
     return { topics: [...topics, ...fallback], fallbackTopicCount: fallback.length };
   }
