@@ -10,6 +10,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import * as fs from 'fs';
+import { FakeRedis } from '../../test/fake-redis';
+import { SECRET_KEY_BYTES, hashSecret } from '../shared/utils/secret-cipher';
 import { MS_IN_SECOND } from '../shared/constants/rate-limit.constants';
 import { TooManyRequestsException } from '../shared/exceptions/too-many-requests.exception';
 import {
@@ -19,6 +21,7 @@ import {
   CHANNEL_LOOKUP_FAILURE_PREFIXES,
   CONNECTION_LABEL,
   CONNECTION_RETRIES_COUNT,
+  DIGEST_SESSION_KEY,
   EXTERNAL_CALL_TIMEOUT_MS,
   FLOOD_SLEEP_THRESHOLD_S,
   POSTS_MAX_MESSAGES,
@@ -28,17 +31,21 @@ import {
   PHONE_FLOOD_RETRY_AFTER_S,
   RETRY_DELAY_MS,
   SECONDS_IN_HOUR,
+  SESSION_STORE_KEY_PREFIX,
   TIMEOUT_SUFFIX,
 } from './constants';
 import { AuthService } from './auth.service';
 import { ChannelService } from './channel.service';
+import { SessionRepository } from './session-repository';
 import { SessionStore } from './session-store';
 import { TelegramClientFactory } from './telegram-client.factory';
 import { TelegramService } from './telegram.service';
 import {
   CHANNEL_UNAVAILABLE_MESSAGE,
+  DIGEST_SESSION_MISSING_MESSAGE,
   INVALID_SESSION_MESSAGE,
   MISSING_CONFIG_MESSAGE,
+  SESSION_STORAGE_UNAVAILABLE_MESSAGE,
   TELEGRAM_FAILED_MESSAGE,
   TELEGRAM_UNAVAILABLE_MESSAGE,
 } from './utils/telegram-errors';
@@ -307,14 +314,24 @@ async function authenticateFully(service: TelegramService): Promise<MockTelegram
 interface ServiceGraph {
   service: TelegramService;
   sessions: SessionStore;
+  repository: SessionRepository;
+  channels: ChannelService;
 }
 
-function buildService(): ServiceGraph {
+/** Memory-only by default, as when REDIS_URL is unset; pass a Redis-backed repository to persist. */
+function buildService(
+  repository: SessionRepository = new SessionRepository(null, null),
+): ServiceGraph {
   const factory = new TelegramClientFactory();
-  const sessions = new SessionStore(factory);
+  const sessions = new SessionStore(factory, repository);
   const auth = new AuthService(factory, sessions);
   const channels = new ChannelService(sessions);
-  return { service: new TelegramService(auth, channels, sessions), sessions };
+  return {
+    service: new TelegramService(auth, channels, sessions, repository),
+    sessions,
+    repository,
+    channels,
+  };
 }
 
 /** The caller-facing message configured for an auth-input MTProto code. */
@@ -1593,6 +1610,106 @@ describe('TelegramService', () => {
     });
   });
 
+  describe('restart with sessions persisted in Redis (fake Redis shared by both processes)', () => {
+    const inputEncryptionKey = Buffer.alloc(SECRET_KEY_BYTES, 8);
+    const inputPersistenceConfig = {
+      redisUrl: 'redis://fake-redis.invalid:6379',
+      encryptionKey: inputEncryptionKey,
+    };
+    const expectedRecordKey = SESSION_STORE_KEY_PREFIX + hashSecret(mockFakeSessionString);
+    let fakeRedis: FakeRedis;
+    let persisted: ServiceGraph;
+    let restarted: ServiceGraph;
+
+    function buildPersistedService(): ServiceGraph {
+      return buildService(new SessionRepository(fakeRedis.asRedis(), inputPersistenceConfig));
+    }
+
+    beforeEach(async () => {
+      fakeRedis = new FakeRedis();
+      persisted = buildPersistedService();
+      await authenticateFully(persisted.service);
+      await persisted.service.onModuleDestroy();
+      mockCreatedClients.length = 0;
+      restarted = buildPersistedService();
+    });
+
+    afterEach(async () => {
+      await restarted.service.onModuleDestroy();
+    });
+
+    it('reports success for a session issued before the restart (acceptance for /telegram/me)', async () => {
+      // Act
+      const actualResult = await restarted.service.checkSession(mockFakeSessionString);
+
+      // Assert
+      expect(actualResult).toEqual({ status: 'success' });
+      expect(mockCreatedClients).toHaveLength(1);
+      expect(mockCreatedClients[0].constructorArgs[0]).toEqual(
+        expect.objectContaining({ initial: mockFakeSessionString }),
+      );
+      expect(mockCreatedClients[0].connect).toHaveBeenCalledTimes(1);
+    });
+
+    it('serves posts for a session issued before the restart', async () => {
+      // Act
+      const actualResult = await restarted.service.getChannelPosts(
+        inputChannel,
+        mockFakeSessionString,
+      );
+
+      // Assert
+      expect(actualResult.posts).toEqual([]);
+      expect(mockCreatedClients).toHaveLength(1);
+    });
+
+    it('reports failed and drops the stored record when Telegram rejects the restored session', async () => {
+      // Arrange
+      mockConfigureClient = (client) => {
+        client.invoke.mockRejectedValue(rpcError('AUTH_KEY_UNREGISTERED'));
+      };
+
+      // Act
+      const actualResult = await restarted.service.checkSession(mockFakeSessionString);
+
+      // Assert
+      expect(actualResult).toEqual({ status: 'failed' });
+      expect(fakeRedis.values.has(expectedRecordKey)).toBe(false);
+      expect(mockCreatedClients[0].destroy).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers 503 when Redis is down on a miss, not "failed", and creates no client', async () => {
+      // Arrange
+      fakeRedis.failAll();
+
+      // Act
+      const actualResult = restarted.service.checkSession(mockFakeSessionString);
+
+      // Assert
+      await expectHttpError(
+        actualResult,
+        ServiceUnavailableException,
+        SESSION_STORAGE_UNAVAILABLE_MESSAGE,
+      );
+      expect(mockCreatedClients).toHaveLength(0);
+    });
+
+    it('never touches the disk and never logs or stores the session string in the clear', async () => {
+      // Act
+      await restarted.service.checkSession(mockFakeSessionString);
+
+      // Assert
+      expect(observedFsCalls()).toBe(0);
+      expect(loggedText(loggerSpies)).not.toContain(mockFakeSessionString);
+      expect(loggedText(loggerSpies)).not.toContain(inputEncryptionKey.toString('base64'));
+      for (const call of fakeRedis.calls) {
+        for (const argument of call.args) {
+          expect(String(argument)).not.toContain(mockFakeSessionString);
+        }
+      }
+    });
+  });
+
   describe('getChannelPosts media mapping', () => {
     let mockClient: MockTelegramClient;
 
@@ -1823,6 +1940,260 @@ describe('TelegramService', () => {
       // Assert
       await expectHttpError(actualResult, BadGatewayException, TELEGRAM_FAILED_MESSAGE);
       expect(mockClient.destroy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('markDigestSession', () => {
+    const inputUnknownSession = 'fake-session-unknown';
+    let repository: SessionRepository;
+
+    beforeEach(async () => {
+      await service.onModuleDestroy();
+      ({ service, sessions, repository } = buildService());
+    });
+
+    it('marks a session Telegram accepts, trimmed', async () => {
+      // Arrange
+      await authenticateFully(service);
+
+      // Act
+      await service.markDigestSession(`  ${mockFakeSessionString}  `);
+
+      // Assert
+      await expect(repository.loadDigest()).resolves.toBe(mockFakeSessionString);
+    });
+
+    it('answers 401 for an unknown session and keeps the previous mark', async () => {
+      // Arrange
+      await authenticateFully(service);
+      await service.markDigestSession(mockFakeSessionString);
+
+      // Act
+      const actualResult = service.markDigestSession(inputUnknownSession);
+
+      // Assert
+      await expectHttpError(actualResult, UnauthorizedException, INVALID_SESSION_MESSAGE);
+      await expect(repository.loadDigest()).resolves.toBe(mockFakeSessionString);
+    });
+
+    it('answers 401 when Telegram rejects the session and marks nothing', async () => {
+      // Arrange
+      const mockClient = await authenticateFully(service);
+      mockClient.invoke.mockRejectedValueOnce(rpcError('AUTH_KEY_UNREGISTERED'));
+      const markSpy = jest.spyOn(repository, 'markDigest');
+
+      // Act
+      const actualResult = service.markDigestSession(mockFakeSessionString);
+
+      // Assert
+      await expectHttpError(actualResult, UnauthorizedException, INVALID_SESSION_MESSAGE);
+      expect(markSpy).not.toHaveBeenCalled();
+      await expect(repository.loadDigest()).resolves.toBeUndefined();
+    });
+
+    it('propagates a transport failure as 503 and leaves the mark untouched', async () => {
+      // Arrange
+      const mockClient = await authenticateFully(service);
+      const markSpy = jest.spyOn(repository, 'markDigest');
+      mockClient.invoke.mockRejectedValueOnce(new Error('fake ECONNRESET'));
+
+      // Act
+      const actualResult = service.markDigestSession(mockFakeSessionString);
+
+      // Assert
+      await expectHttpError(
+        actualResult,
+        ServiceUnavailableException,
+        TELEGRAM_UNAVAILABLE_MESSAGE,
+      );
+      expect(markSpy).not.toHaveBeenCalled();
+    });
+
+    it('propagates a flood wait as 429 instead of 401', async () => {
+      // Arrange
+      const mockClient = await authenticateFully(service);
+      mockClient.invoke.mockRejectedValueOnce(rpcError(`FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`));
+
+      // Act
+      const actualResult = service.markDigestSession(mockFakeSessionString);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(TooManyRequestsException);
+      await expect(repository.loadDigest()).resolves.toBeUndefined();
+    });
+
+    it('never logs the session string', async () => {
+      // Arrange
+      await authenticateFully(service);
+      clearLoggerSpies(loggerSpies);
+
+      // Act
+      await service.markDigestSession(mockFakeSessionString);
+      await service.markDigestSession(inputUnknownSession).catch(() => undefined);
+
+      // Assert
+      expect(countLogLines(loggerSpies)).toBeGreaterThan(0);
+      expect(loggedText(loggerSpies)).not.toContain(mockFakeSessionString);
+    });
+  });
+
+  describe('readPostsAsDigestAccount', () => {
+    let repository: SessionRepository;
+    let channels: ChannelService;
+
+    beforeEach(async () => {
+      await service.onModuleDestroy();
+      ({ service, sessions, repository, channels } = buildService());
+      jest.spyOn(Date, 'now').mockReturnValue(FAKE_NOW_MS);
+    });
+
+    it('answers 401 with the digest message when no session is marked', async () => {
+      // Arrange
+      const getPostsSpy = jest.spyOn(channels, 'getChannelPosts');
+
+      // Act
+      const actualResult = service.readPostsAsDigestAccount(inputChannel, INPUT_HOURS_BACK);
+
+      // Assert
+      await expectHttpError(actualResult, UnauthorizedException, DIGEST_SESSION_MISSING_MESSAGE);
+      expect(getPostsSpy).not.toHaveBeenCalled();
+    });
+
+    it('delegates to ChannelService with the stored session', async () => {
+      // Arrange
+      await authenticateFully(service);
+      await service.markDigestSession(mockFakeSessionString);
+      const expectedResponse = { posts: [], count: 0, isTruncated: false };
+      const getPostsSpy = jest
+        .spyOn(channels, 'getChannelPosts')
+        .mockResolvedValueOnce(expectedResponse);
+
+      // Act
+      const actualResult = await service.readPostsAsDigestAccount(inputChannel, INPUT_HOURS_BACK);
+
+      // Assert
+      expect(actualResult).toBe(expectedResponse);
+      expect(getPostsSpy).toHaveBeenCalledWith(
+        inputChannel,
+        mockFakeSessionString,
+        INPUT_HOURS_BACK,
+      );
+    });
+
+    it('reads the channel through the cached client of the marked session', async () => {
+      // Arrange
+      const mockClient = await authenticateFully(service);
+      await service.markDigestSession(mockFakeSessionString);
+      queuePages(mockClient, [buildPage(FIRST_MESSAGE_ID, SHORT_PAGE_SIZE)]);
+
+      // Act
+      const actualResult = await service.readPostsAsDigestAccount(inputChannel, INPUT_HOURS_BACK);
+
+      // Assert
+      expect(actualResult.count).toBe(SHORT_PAGE_SIZE);
+      expect(mockClient.getInputEntity).toHaveBeenCalledWith(inputChannel);
+    });
+
+    it('answers 401 after Telegram rejects the marked session (eviction clears the mark)', async () => {
+      // Arrange
+      const mockClient = await authenticateFully(service);
+      await service.markDigestSession(mockFakeSessionString);
+      mockClient.invoke.mockRejectedValueOnce(rpcError('AUTH_KEY_UNREGISTERED'));
+      await service.checkSession(mockFakeSessionString);
+
+      // Act
+      const actualResult = service.readPostsAsDigestAccount(inputChannel, INPUT_HOURS_BACK);
+
+      // Assert
+      await expectHttpError(actualResult, UnauthorizedException, DIGEST_SESSION_MISSING_MESSAGE);
+      expect(mockClient.destroy).toHaveBeenCalledTimes(1);
+      await expect(repository.loadDigest()).resolves.toBeUndefined();
+    });
+
+    it('never logs the session string', async () => {
+      // Arrange
+      const mockClient = await authenticateFully(service);
+      await service.markDigestSession(mockFakeSessionString);
+      queuePages(mockClient, [buildPage(FIRST_MESSAGE_ID, SHORT_PAGE_SIZE)]);
+      clearLoggerSpies(loggerSpies);
+
+      // Act
+      await service.readPostsAsDigestAccount(inputChannel, INPUT_HOURS_BACK);
+
+      // Assert
+      expect(loggedText(loggerSpies)).not.toContain(mockFakeSessionString);
+    });
+  });
+
+  describe('digest session persisted in Redis (fake Redis)', () => {
+    const inputPersistenceConfig = {
+      redisUrl: 'redis://fake-redis.invalid:6379',
+      encryptionKey: Buffer.alloc(SECRET_KEY_BYTES, 9),
+    };
+    let fakeRedis: FakeRedis;
+
+    function buildPersistedService(): ServiceGraph {
+      return buildService(new SessionRepository(fakeRedis.asRedis(), inputPersistenceConfig));
+    }
+
+    beforeEach(async () => {
+      await service.onModuleDestroy();
+      fakeRedis = new FakeRedis();
+      ({ service, sessions } = buildPersistedService());
+      jest.spyOn(Date, 'now').mockReturnValue(FAKE_NOW_MS);
+    });
+
+    it('stores only the session hash under the digest key, never the session string', async () => {
+      // Arrange
+      await authenticateFully(service);
+
+      // Act
+      await service.markDigestSession(mockFakeSessionString);
+
+      // Assert
+      expect(fakeRedis.values.get(DIGEST_SESSION_KEY)).toBe(hashSecret(mockFakeSessionString));
+      for (const call of fakeRedis.calls) {
+        for (const argument of call.args) {
+          expect(String(argument)).not.toContain(mockFakeSessionString);
+        }
+      }
+    });
+
+    it('reads posts with the marked session after a restart', async () => {
+      // Arrange
+      await authenticateFully(service);
+      await service.markDigestSession(mockFakeSessionString);
+      await service.onModuleDestroy();
+      mockCreatedClients.length = 0;
+      ({ service, sessions } = buildPersistedService());
+
+      // Act
+      const actualResult = await service.readPostsAsDigestAccount(inputChannel, INPUT_HOURS_BACK);
+
+      // Assert
+      expect(actualResult.posts).toEqual([]);
+      expect(mockCreatedClients).toHaveLength(1);
+      expect(mockCreatedClients[0].constructorArgs[0]).toEqual(
+        expect.objectContaining({ initial: mockFakeSessionString }),
+      );
+    });
+
+    it('drops the digest key when Telegram rejects the marked session', async () => {
+      // Arrange
+      const mockClient = await authenticateFully(service);
+      await service.markDigestSession(mockFakeSessionString);
+      mockClient.invoke.mockRejectedValueOnce(rpcError('AUTH_KEY_UNREGISTERED'));
+
+      // Act
+      await service.checkSession(mockFakeSessionString);
+
+      // Assert
+      expect(fakeRedis.values.has(DIGEST_SESSION_KEY)).toBe(false);
+      await expectHttpError(
+        service.readPostsAsDigestAccount(inputChannel, INPUT_HOURS_BACK),
+        UnauthorizedException,
+        DIGEST_SESSION_MISSING_MESSAGE,
+      );
     });
   });
 });

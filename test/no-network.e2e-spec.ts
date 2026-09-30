@@ -2,10 +2,12 @@ import { Test } from '@nestjs/testing';
 import type { TestingModule } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
+import Redis from 'ioredis';
 import { TelegramClient } from 'telegram';
 import { AppModule } from '../src/app.module';
 import { API_KEYS_ENV_VAR } from '../src/config/api-keys.config';
 import { API_KEY_HEADER, SESSION_HEADER } from '../src/shared/constants/http.constants';
+import { REDIS_CLIENT, SESSION_PERSISTENCE_CONFIG } from '../src/redis/redis.constants';
 import { configureHttpPipeline } from '../src/shared/utils/http-pipeline';
 import { AuthService } from '../src/telegram/auth.service';
 import { ChannelService } from '../src/telegram/channel.service';
@@ -22,6 +24,9 @@ jest.mock('telegram', () => ({
   ...jest.requireActual<Record<string, unknown>>('telegram'),
   TelegramClient: jest.fn(),
 }));
+
+/** A spy constructor: a Redis connection attempted during the run would be recorded here. */
+jest.mock('ioredis', () => ({ __esModule: true, default: jest.fn() }));
 
 const AUTH_ROUTE = '/telegram/auth';
 const HEALTH_ROUTE = '/telegram/health';
@@ -156,6 +161,22 @@ describe('no-network guarantee (e2e)', () => {
     expect(actualProviders[3]).toBeInstanceOf(ChannelService);
     expect(jest.isMockFunction(mockTelegramClientConstructor)).toBe(true);
     expect(mockTelegramClientConstructor).not.toHaveBeenCalled();
+  });
+
+  it('boots in memory-only session mode and never constructs a Redis client, even with a local .env', () => {
+    // Arrange
+    const mockRedisConstructor = Redis as unknown as jest.Mock;
+
+    // Act
+    const actualRedisClient = app.get(REDIS_CLIENT);
+    const actualPersistenceConfig = app.get(SESSION_PERSISTENCE_CONFIG);
+
+    // Assert
+    expect(process.env.REDIS_URL).toBe('');
+    expect(actualRedisClient).toBeNull();
+    expect(actualPersistenceConfig).toBeNull();
+    expect(jest.isMockFunction(mockRedisConstructor)).toBe(true);
+    expect(mockRedisConstructor).not.toHaveBeenCalled();
   });
 
   it('leaves no background sweep running once the lifecycle providers are closed', async () => {

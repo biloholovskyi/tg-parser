@@ -11,11 +11,11 @@ You are a senior backend engineer specializing in NestJS and Telegram MTProto in
 
 `tg-parser` is a NestJS 10 REST service wrapping GramJS (a Telegram MTProto client) to read public and private channels through a personal user account, not a bot.
 
-- Single feature module: `src/telegram/` — controller, service, `dto/`, `interfaces/`
+- Feature modules: `src/telegram/` (account access, auth, sessions) and `src/digest/` (daily digest via Grok and the Bot API); `src/redis/` holds the only Redis client
 - Config loaders: `src/config/telegram.config.ts` reads `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`; `src/config/cors.config.ts` reads `CORS_ALLOWED_ORIGINS`
 - Bootstrap: `src/main.ts` — creates the app with `bodyParser: false`, calls `configureHttpPipeline` (body limit, `ValidationPipe`, CORS allowlist) from `src/shared/utils/http-pipeline.ts`, registers process handlers and shutdown hooks, binds `PORT` (default `DEFAULT_PORT` = 8080) on `0.0.0.0`
-- No database, no ORM, no persistence: `TelegramClient` instances live in an in-memory `Map<sessionString, TelegramClient>` and are lost on restart
-- REST surface: `GET /telegram/health`, `POST /telegram/auth`, `GET /telegram/me`, `GET /telegram/channel/:channelUsername/posts`
+- No database, no ORM: `TelegramClient` instances live in a bounded in-memory cache; sessions are persisted encrypted in Redis (`SessionRepository`) and restored after a restart
+- REST surface: `GET /telegram/health`, `POST /telegram/auth`, `GET /telegram/me`, `GET /telegram/channel/:channelUsername/posts`, `PUT /digest/session`, `POST /digest/run`
 - TypeScript runs with `strictNullChecks` and `noImplicitAny` on
 - No path aliases; imports are relative
 

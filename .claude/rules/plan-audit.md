@@ -45,7 +45,7 @@ The plan must exist at `docs/plans/<plan-name>/<plan-name>-implementation-plan.m
 ### Risk Assessment Checklist
 
 - [ ] Breaking changes identified (REST contract changes, env var renames, response shape changes)
-- [ ] Session-model impact assessed: does the change affect the in-memory session cache, client lifecycle, or auth flow
+- [ ] Session-model impact assessed: does the change affect the in-memory client cache, the Redis session records, client lifecycle, or auth flow
 - [ ] Rate-limit impact assessed: does the change increase MTProto call volume for one account
 - [ ] Rollback strategy exists for risky changes
 - [ ] All affected modules identified

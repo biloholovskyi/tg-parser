@@ -41,7 +41,7 @@ This rule owns the perimeter: who may call the service, how often, and how crede
 ## Credential Handling
 
 - API keys and origin allowlists are read through a loader in `src/config/`, never inline from `process.env`.
-- A `sessionString` is never written to disk, never logged at any level, never placed in a URL, and never returned by any endpoint except the auth flow that issued it. Truncating or taking a prefix of it is still logging it.
+- A `sessionString` is never written anywhere in plain text: it is persisted only by `SessionRepository`, encrypted, in Redis (`docs/plans/block-10-daily-digest/adr-session-redis.md`). It is never logged at any level, never placed in a URL, and never returned by any endpoint except the auth flow that issued it. Truncating or taking a prefix of it is still logging it.
 - Phone numbers are personal data: never logged, never persisted, never used as a filename or a JSON key in a stored artifact.
 - A session known to be compromised or revoked is evicted from the cache immediately.
 

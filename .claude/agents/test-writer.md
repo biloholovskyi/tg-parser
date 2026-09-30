@@ -37,7 +37,7 @@ A NestJS REST service wrapping GramJS (Telegram MTProto client). Tests use Jest 
 
 ## Coverage Focus for This Project
 
-- Session cache: hit, miss, eviction on unrecoverable error, behavior after a simulated restart (empty cache)
+- Session cache: hit, miss, eviction on unrecoverable error, behavior after a simulated restart (empty cache: restore from the Redis record, 401 without a record, 503 when Redis is down)
 - Client lifecycle: disconnect is called on both success and error paths
 - Auth flow: each step (phone, code, 2FA), plus expired code and wrong password branches
 - Error mapping: every row of the error table in `.claude/rules/telegram.md`

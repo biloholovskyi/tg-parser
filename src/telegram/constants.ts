@@ -93,3 +93,12 @@ export const PASSWORD_NEEDED_ERROR = 'SESSION_PASSWORD_NEEDED';
 
 /** Base of the public link to a channel post. */
 export const POST_URL_BASE = 'https://t.me';
+
+/** A stored session unused for this long disappears from Redis; every use extends it. */
+export const SESSION_STORE_TTL_S = 30 * 24 * SECONDS_IN_HOUR;
+
+/** Redis key prefix of a stored session; the suffix is the SHA-256 of the session string. */
+export const SESSION_STORE_KEY_PREFIX = 'tg:session:';
+
+/** Redis key holding the SHA-256 of the session the daily digest reads channels with. */
+export const DIGEST_SESSION_KEY = 'tg:digest-session';

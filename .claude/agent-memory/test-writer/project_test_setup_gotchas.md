@@ -1,6 +1,6 @@
 ---
 name: project-test-setup-gotchas
-description: Non-obvious setup facts for tg-parser specs — AppModule reloads .env on compile, narrowed process view for listeners, DTO pipe options, facade wiring and fs observation, concurrency gating, pre-fix proofs in a scratch copy, closing lifecycle providers in E2E
+description: Non-obvious setup facts for tg-parser specs — AppModule reloads .env on compile, narrowed process view for listeners, DTO pipe options, facade wiring and fs observation, concurrency gating, pre-fix proofs in a scratch copy, closing lifecycle providers in E2E; digest scheduler and fetch mocks
 metadata:
   type: project
 ---
@@ -104,6 +104,39 @@ problems.
 **How to apply:** when bootstrapping `AppModule` in `test/*.e2e-spec.ts`, or when a unit spec
 attaches real process handlers. See also [[project-test-run-environment]].
 
+17. Redis session persistence (block-10): the shared in-memory fake is `test/fake-redis.ts` (imported from
+    unit specs as `../../test/fake-redis`, kept outside `src/` so it never builds into `dist`). E2E runs
+    are forced into memory-only mode by `test/setup-env.ts` (jest-e2e `setupFiles`), which blanks
+    `REDIS_URL` / `SESSION_ENCRYPTION_KEY` before any import; ConfigModule never overrides a defined var.
+    `Array.prototype.at` does not type-check (target ES2021) — index with `length - 1`.
+
 16. E2E specs override only the `TelegramService` facade, so the real `AuthService` and `SessionStore`
     are still built and each starts a sweep interval that nothing closes (the facade owns shutdown).
     Call `closeLifecycleProviders(app)` from `test/lifecycle-providers.ts` before `app.close()`.
+
+18. A spec that imports `src/telegram/dto/messages.dto.ts` (even only for a re-exported constant) must
+    `import 'reflect-metadata'` first: the DTO's `class-transformer` `@Type` decorator calls
+    `Reflect.getMetadata` at module load and the suite fails with "Reflect.getMetadata is not a function".
+    To prove strictly sequential per-channel work (digest `PostCollector`), gate the first call with a
+    hand-made deferred and assert the call count is still 1 after `await new Promise(setImmediate)`.
+
+19. A "timer cleared" proof with fake timers must not advance past the timeout itself: an uncleared
+    timer fires and `jest.getTimerCount()` reads 0 anyway. Advance only the retry waits and then check
+    the count, or spy `setTimeout`/`clearTimeout` and assert every armed timeout id was cleared. For
+    `fetch`-based clients (digest `GrokClient`) mock with `jest.spyOn(global, 'fetch')` and real
+    `new Response(...)`; a hang-until-abort fake listens on `init.signal` and rejects with an
+    `AbortError`-named error. Verified mutations in a scratch copy (item 13) catch both a missing
+    `clearTimeout` and a body parse moved out of the guarded `try`.
+
+20. Digest scheduling (block-10): unit-test `DigestScheduler` with a real `new SchedulerRegistry()` and
+    `jest.useFakeTimers({ now })`; cron 3 arms a plain `setTimeout`, so `jest.getTimerCount()` proves the
+    job armed/stopped, `job.nextDate().toMillis()` proves the time zone, `fireOnTick()` avoids waiting for
+    a tick. Stop and delete every registry job in `afterEach`. E2E digest config: set the four required
+    digest env vars to `''` (defined, so the local .env cannot refill them) in a file-level `beforeAll`;
+    a "configured" E2E sets obvious fakes in `beforeEach` and blanks them again in `afterEach`.
+    A `Response` object can be read once: use `mockImplementation(async () => okResponse())`, not
+    `mockResolvedValue(okResponse())`, when a fetch mock answers more than once.
+    Multi-line Python heredocs from Bash fail the same way as `cat` heredocs: write the text to the
+    scratchpad with the Write tool and `cat file >> target` instead.
+    Python `open(p, "w")` on Windows writes CRLF and prettier then fails every line: pass
+    `newline="\n"` or run `sed -i 's/\r$//'` on the file, then `rtk npx.cmd eslint --fix <spec>`.

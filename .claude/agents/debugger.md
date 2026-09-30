@@ -24,7 +24,7 @@ Guessing is the failure mode you exist to prevent. A cause is not established un
 
 Check these before anything exotic, because they cause most of the confusing behaviour here:
 
-- Session cache: entries lost on restart, entries never evicted, a second client created for the same session
+- Session cache: sessions not restored from Redis after a restart, entries never evicted, a second client created for the same session
 - Auth state: expired code hash, state reused across attempts, state cleared on an error path
 - GramJS defaults inherited rather than set: flood sleeping inside a request, retries, reconnects
 - Process termination: a generic handler that calls `process.exit`, turning an ordinary network fault into a restart

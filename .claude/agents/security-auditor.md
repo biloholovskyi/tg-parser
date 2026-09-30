@@ -18,7 +18,7 @@ Run `.claude/rules/api-security.md` (perimeter) and the security pass of `.claud
 
 1. Perimeter: enumerate every route decorator. For each, establish whether it requires caller authentication, whether it is rate limited, and what a caller with no key can make the service do. Report every unauthenticated route that reaches Telegram as CRITICAL.
 2. Credential transport: trace `sessionString`, phone number, SMS code and 2FA password from the HTTP boundary to GramJS. Flag any that appear in a path, a query string, a log statement, an error message, a file, or a response body other than the issuing auth response. A truncated prefix or a logged length counts as exposure.
-3. Storage: find everything written to disk or to a fixture. Confirm no credential and no personal data is persisted, and that any runtime state directory is git-ignored.
+3. Storage: find everything written to disk or to a fixture. Confirm the only persisted credential is the encrypted `SessionRepository` record in Redis, no personal data is persisted, and any runtime state directory is git-ignored.
 4. Repository exposure: scan tracked files and git history for credentials, session strings, API hashes and phone numbers. Report the location, never the value.
 5. Input validation: confirm a global `ValidationPipe` is actually wired and that every DTO carries decorators. An undecorated DTO is not validation.
 6. CORS, headers and body limits against the constants in `.claude/rules/api-security.md`.

@@ -25,7 +25,11 @@ A leaked resource here is not a latency problem, it is a recurring bill: a `Tele
 - POSTS_MAX_MESSAGES = 1000 (walk ceiling per request; beyond it the response sets `isTruncated`)
 - Location: SESSION_CACHE_MAX_ENTRIES through POSTS_MAX_MESSAGES are defined in `src/telegram/constants.ts`
 - PING_INTERVAL_S = 9 (GramJS internal, per connected client — not configurable)
-- RUNTIME_INSTANCE_COUNT = 1 (the in-memory session cache has no cross-instance affinity)
+- SESSION_STORE_TTL_S = 30 days (a stored session unused this long expires in Redis; every use extends it) — `src/telegram/constants.ts`
+- REDIS_COMMAND_TIMEOUT_MS = 5000, REDIS_CONNECT_TIMEOUT_MS = 10_000, REDIS_MAX_RETRIES = 2 (per command), reconnect delay REDIS_RECONNECT_STEP_MS per attempt up to REDIS_RECONNECT_MAX_DELAY_MS = 30_000 — `src/redis/redis.constants.ts`
+- DIGEST_MAX_CHANNELS = 50, DIGEST_MAX_POSTS = 600, DIGEST_WINDOW_HOURS = 24 — `src/config/digest.config.ts`, `src/digest/constants.ts`
+- GROK_CALL_TIMEOUT_MS = 180_000 with GROK_MAX_RETRIES = 2; TRANSLATION_BUDGET_MS = 60 min (no new translation batch after it, nor after the first batch Grok fails); BOT_CALL_TIMEOUT_MS = 30_000 with BOT_MAX_RETRIES = 3 and BOT_MAX_RETRY_AFTER_S = 60 — `src/digest/constants.ts`
+- RUNTIME_INSTANCE_COUNT = 1 (the in-memory client cache, the single-run digest flag and the scheduled job have no cross-instance coordination)
 - RUNTIME_FILESYSTEM = ephemeral (reset on every deploy and restart)
 
 ## Resource Ownership (hard)
@@ -34,8 +38,11 @@ A leaked resource here is not a latency problem, it is a recurring bill: a `Tele
 - Every entry evicted from a cache of connections is disconnected as part of the eviction, not left to the garbage collector.
 - Every path that creates a `TelegramClient` names the code path that disconnects it, including every error branch and the shutdown hook.
 - Every `setInterval` and `setTimeout` is cleared on the path that settles it; a timer that outlives its request is a leak. Long-lived intervals call `unref()`.
-- Every external call carries EXTERNAL_CALL_TIMEOUT_MS, and the timer for that timeout is cleared once the call settles.
+- Every external call carries a named timeout — EXTERNAL_CALL_TIMEOUT_MS for Telegram, REDIS_COMMAND_TIMEOUT_MS for Redis, GROK_CALL_TIMEOUT_MS for Grok, BOT_CALL_TIMEOUT_MS for the Bot API — and the timer for that timeout is cleared once the call settles.
 - Shutdown (`onModuleDestroy` / shutdown hooks) disconnects every cached client and clears every interval.
+- The Redis connection is opened by `src/redis/redis-client.ts` only, and closed in `onApplicationShutdown`, after every Telegram client is released. During an outage it reconnects at most once per REDIS_RECONNECT_MAX_DELAY_MS and logs one line per outage, not per attempt.
+- The digest job is registered in `SchedulerRegistry` only when the digest is configured, and is stopped and removed in `onModuleDestroy`.
+- One digest run at a time; its flag is released in `finally`. A run is bounded by the call timeouts and retries above, and reads channels strictly one after another.
 
 ## GramJS Client Baseline
 
@@ -56,7 +63,7 @@ Client options are set explicitly from named constants, never left at library de
 
 - A single unhandled rejection must not kill the process. Log it with the NestJS `Logger` and keep serving; GramJS emits background rejections on ordinary network faults.
 - `process.exit` belongs only in a deliberate shutdown path, never in a generic error handler.
-- A crash loop is a cost event: every restart empties the session cache and forces every caller to re-authenticate, which multiplies Telegram-side auth traffic.
+- A crash loop is a cost event: every restart empties the client cache, so every active session reconnects from its Redis record (and, without Redis, every caller re-authenticates), which multiplies Telegram-side connection and auth traffic.
 
 ## Environment Constraints
 

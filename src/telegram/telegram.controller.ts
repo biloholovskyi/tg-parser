@@ -12,12 +12,11 @@ import {
 import { PhoneRateLimited } from '../shared/decorators/phone-rate-limited.decorator';
 import { PublicRoute } from '../shared/decorators/public-route.decorator';
 import { SessionString } from '../shared/decorators/session-string.decorator';
+import { MISSING_SESSION_MESSAGE } from '../shared/utils/session-header';
 import { AuthResponseDto, CompleteAuthDto } from './dto/auth.dto';
 import { ChannelPostsParamsDto, GetPostsQueryDto, HOURS_BACK_DEFAULT } from './dto/messages.dto';
 import { GetPostsResponse } from './interfaces/message.interface';
 import { TelegramService } from './telegram.service';
-
-const MISSING_SESSION_MESSAGE = 'A session string is required in the x-session-string header';
 
 @Controller('telegram')
 export class TelegramController {

@@ -1,0 +1,42 @@
+- phase-01 start 2026-09-25T08:49:55Z
+- phase-01 end 2026-09-25T09:09:38Z
+  - Сессии пишутся в Redis зашифрованными (SessionRepository), SessionStore поднимает клиента из записи при промахе кэша; без REDIS_URL или ключа — режим «только память».
+  - Redis закрывается в onApplicationShutdown, после освобождения клиентов Telegram; подключение при старте, не лениво.
+  - Для Phase 02 готовы SessionRepository.markDigest / loadDigest; в режиме «только память» отметка дайджеста живёт в памяти процесса.
+  - Ошибка Redis — 503 через sessionStorageUnavailableException; E2E защищены от .env разработчика через test/setup-env.ts.
+  - Общая подделка Redis для тестов: test/fake-redis.ts.
+  - Известный низкий риск: remove снимает отметку дайджеста двумя командами (get, del) без атомарности.
+  - Не закрыто: прохождение docs/deployment/railway-redis.md на Railway пользователем.
+- phase-02 start 2026-09-25T09:23:27Z
+- phase-02 end 2026-09-25T09:31:24Z
+  - PUT /digest/session отмечает сессию дайджеста (хеш в Redis, строка только в src/telegram/); TelegramService.readPostsAsDigestAccount читает каналы от её имени.
+  - PostCollector.collect(channels, hoursBack) возвращает CollectedPosts: сквозные ref p1..pN, посты от старых к новым, недоступные и обрезанные каналы.
+  - 401, 429, 503 и не-HTTP ошибки прерывают сбор без лога: исход прерванного запуска логирует оркестратор в Phase 04.
+  - getDigestConfig (провайдер DIGEST_CONFIG) уже читает Grok и бота; isConfigured требует каналы, GROK_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_CHAT_ID. GROK_MODEL_DEFAULT сверить в Phase 03.
+  - Имена каналов приводятся к нижнему регистру; ссылки t.me от этого не ломаются.
+  - Не покрыто: 429 по лимиту частоты на PUT /digest/session (guard глобальный, общий для всех маршрутов).
+- phase-03 start 2026-09-25T09:41:35Z
+- phase-03 end 2026-09-25T13:52:44Z
+  - GrokClient.completeJson: xAI chat completions, ответ по строгой JSON-схеме, таймаут GROK_CALL_TIMEOUT_MS, до GROK_MAX_RETRIES повторов; модель по умолчанию grok-4.6 (docs.x.ai, 25.09.2026).
+  - TranslationService.translate(posts) -> TranslationResult: сбой пачки не прерывает запуск, посты остаются на языке оригинала с isUntranslated.
+  - SummaryService.summarize(posts) -> SummaryResult: полнота гарантирована кодом (дозапросы и резервные блоки); сбой первого запроса бросается — Phase 04 отправляет резервный дайджест.
+  - DIGEST_MAX_POSTS ещё не применяется: потолок входа ставит оркестратор в Phase 04.
+  - Мелочь: тело ответа не-JSON при статусе 200 логируется как "network error (SyntaxError)"; повтор и гигиена секретов работают.
+  - Непереведённые посты уходят в саммари на языке оригинала.
+- phase-04 start 2026-09-26T11:08:04Z
+- phase-04 end 2026-09-26T11:22:37Z
+  - DigestService: collect -> limitPosts(DIGEST_MAX_POSTS) -> translate -> summarize (сбой -> посты списком) -> formatDigest -> BotNotifier; флаг одного запуска снимается в finally; сбой запуска -> сообщение в бота с причиной.
+  - POST /digest/run: 202 / 409 / 503. DigestScheduler регистрирует задачу DIGEST_JOB_NAME через SchedulerRegistry (DIGEST_CRON, DIGEST_TIMEZONE) только при isConfigured; при остановке задача удаляется.
+  - Зависимости: @nestjs/schedule 4.1.2 (последняя для Nest 10), cron 3.2.1.
+  - Для Finalize: smoke-прогон требует GROK_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_CHAT_ID, DIGEST_CHANNELS и отмеченную сессию.
+  - Мелкие замечания без исправления: при разрезе блока части склеиваются через пустую строку; cutLine защищает HTML-сущности, но не теги (из форматтера длинных строк с тегами не бывает); reportFailure логирует message не-HTTP ошибок.
+  - Для аудита в Finalize: runScheduled не проверяет isConfigured сам, полагается на планировщик.
+- phase-05 start 2026-09-26T12:13:25Z
+- phase-05 end 2026-09-26T12:30:25Z
+  - Аудиты: безопасность (0 critical/high, 5 medium), ресурсы (1 high — исправлен), дрейф (12 правок документов). Отчёты в docs/reviews/block-10-*.md.
+  - Исправлено по аудитам: остановка перевода после отказа Grok и TRANSLATION_BUDGET_MS, обрезка текста при сборе, правило «данные, не инструкции» в промптах, закрытие публичного доступа к Redis в инструкции.
+  - Финальный прогон: lint и build чистые, unit 949/949, E2E 67/67 без открытых ресурсов; локальный запуск без Redis и дайджеста — маршруты на месте, health 200.
+  - Версия 1.5.0 в package.json и CHANGELOG; ветка называется 1.5.0 вместо r-1.5.0 — переименование за пользователем.
+  - Не выполнено: реальный smoke с Redis, Grok и ботом; прохождение инструкции Railway.
+  - Решения за пользователем: дайджест без Redis, PUT в CORS, новые секреты в хуке guard-secrets.
+  - Ссылки docs/testing и docs/deployment оставлены относительными (../): путь от корня репозитория сломал бы их в просмотрщике.

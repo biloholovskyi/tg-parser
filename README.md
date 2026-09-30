@@ -25,9 +25,17 @@ TELEGRAM_API_HASH=твой_api_hash
 PORT=8080
 CORS_ALLOWED_ORIGINS=http://localhost:5173
 API_KEYS=первый_ключ,второй_ключ
+# необязательно: хранение сессий в Redis
+REDIS_URL=redis://localhost:6379
+SESSION_ENCRYPTION_KEY=32_байта_в_base64
+# необязательно: ежедневный дайджест
+DIGEST_CHANNELS=channel_one,channel_two
+GROK_API_KEY=ключ_xai
+TELEGRAM_BOT_TOKEN=токен_бота
+TELEGRAM_BOT_CHAT_ID=id_чата
 ```
 
-`PORT` необязателен: без него сервис слушает порт 8080. `CORS_ALLOWED_ORIGINS` — список разрешённых браузерных источников через запятую; пустое значение запрещает все браузерные источники, `*` игнорируется. `API_KEYS` — ключи вызывающих сторон через запятую; пустое или незаданное значение закрывает все маршруты, кроме health-проверки.
+`PORT` необязателен: без него сервис слушает порт 8080. `CORS_ALLOWED_ORIGINS` — список разрешённых браузерных источников через запятую; пустое значение запрещает все браузерные источники, `*` игнорируется. `API_KEYS` — ключи вызывающих сторон через запятую; пустое или незаданное значение закрывает все маршруты, кроме health-проверки. `REDIS_URL` и `SESSION_ENCRYPTION_KEY` включают хранение сессий в Redis: без них сессии живут только в памяти. Переменные дайджеста включают ежедневную сводку; `DIGEST_CRON` (по умолчанию `0 23 * * *`), `DIGEST_TIMEZONE` (по умолчанию `Europe/Kyiv`) и `GROK_MODEL` (по умолчанию `grok-4.6`) необязательны.
 
 ### 3. Установка зависимостей
 
@@ -140,7 +148,7 @@ curl http://localhost:8080/telegram/me \
   -H "x-session-string: 1AaBbCcDd...твоя_сессия"
 ```
 
-Ответ 200: `{"status":"success"}` или `{"status":"failed"}`, где `failed` означает неизвестную или отозванную сессию. Если Telegram недоступен, ответ 503, при ограничении частоты со стороны Telegram — 429: это не приговор сессии, запрос стоит повторить позже.
+Ответ 200: `{"status":"success"}` или `{"status":"failed"}`, где `failed` означает неизвестную или отозванную сессию. Если Telegram или хранилище сессий (Redis) недоступны, ответ 503, при ограничении частоты со стороны Telegram — 429: это не приговор сессии, запрос стоит повторить позже.
 
 ### GET /telegram/channel/:channelUsername/posts
 
@@ -193,7 +201,7 @@ curl "http://localhost:8080/telegram/channel/durov/posts?hoursBack=24" \
 - `404` — канал не найден или недоступен этому аккаунту
 - `429` — Telegram просит подождать, срок в поле `retryAfterSeconds`
 - `502` — прочий отказ Telegram
-- `503` — Telegram недоступен
+- `503` — Telegram или хранилище сессий (Redis) недоступны
 
 У `POST /telegram/auth` свои ошибки: `400` — неверный код или пароль 2FA (у каждого случая своё сообщение), `500` — не заданы `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`.
 
@@ -201,6 +209,16 @@ curl "http://localhost:8080/telegram/channel/durov/posts?hoursBack=24" \
 - `photo` - фото
 - `video` - видео
 - `document` - документ/файл
+
+### PUT /digest/session
+
+Отмечает сессию из заголовка `x-session-string` как сессию дайджеста: от её имени дайджест читает каналы. Ответы: `204` — отмечена, `400` — нет заголовка, `401` — сессия неизвестна или отозвана.
+
+### POST /digest/run
+
+Запускает сбор дайджеста сейчас, результат приходит в бота. Ответы: `202` `{"status":"started"}`, `409` — сбор уже идёт, `503` — дайджест не настроен. По расписанию дайджест собирается сам, по умолчанию в 23:00 по Киеву.
+
+Дайджест: посты за 24 часа со всех каналов `DIGEST_CHANNELS` переводятся на русский и сворачиваются через Grok в короткие тезисы по темам, со ссылками на каждый пост. Ручное тестирование: [docs/testing/digest-manual-testing.md](docs/testing/digest-manual-testing.md).
 
 ## 🚂 Деплой на Railway
 
@@ -230,6 +248,7 @@ src/
 │   ├── auth.service.ts       # Многошаговая авторизация
 │   ├── channel.service.ts    # Постраничный обход канала
 │   ├── session-store.ts      # Жизненный цикл клиентов и кэш сессий
+│   ├── session-repository.ts # Зашифрованные сессии и отметка сессии дайджеста в Redis
 │   ├── telegram-client.factory.ts # Единственное место создания TelegramClient
 │   ├── telegram.controller.ts # REST endpoints
 │   ├── constants.ts          # Лимиты кэша, таймауты, коды ошибок MTProto
@@ -239,6 +258,13 @@ src/
 │   │   └── messages.dto.ts  # DTO запроса постов
 │   └── interfaces/
 │       └── message.interface.ts # Типы данных
+├── digest/
+│   ├── digest.service.ts     # Запуск дайджеста: сбор, перевод, саммари, отправка
+│   ├── digest.scheduler.ts   # Ежедневный запуск по расписанию
+│   ├── digest.controller.ts  # PUT /digest/session, POST /digest/run
+│   ├── grok/                 # Клиент Grok, промпты, JSON-схемы
+│   └── utils/                # Форматирование, нарезка сообщений, проверка полноты
+├── redis/                    # Единственный клиент Redis
 ├── shared/
 │   ├── constants/            # Заголовки, лимиты, размер тела
 │   ├── decorators/           # Публичный маршрут, лимит по номеру, строка сессии
@@ -248,6 +274,8 @@ src/
 └── config/
     ├── api-keys.config.ts    # Ключи вызывающих сторон
     ├── cors.config.ts        # Список источников CORS
+    ├── digest.config.ts      # Настройки дайджеста
+    ├── redis.config.ts       # Redis и ключ шифрования сессий
     └── telegram.config.ts    # Конфигурация API
 ```
 
@@ -261,13 +289,14 @@ src/
 ## 📝 Примечания
 
 - Клиенты Telegram кэшируются в памяти процесса: не больше 50 сессий, неактивные вытесняются
-- Сессии и незавершённые входы хранятся только в памяти, на диск ничего не пишется: после перезапуска или деплоя нужно авторизоваться заново
+- С Redis выданные сессии хранятся в нём зашифрованными и переживают перезапуск и деплой; без Redis — только в памяти. Незавершённые входы всегда только в памяти, на диск ничего не пишется
 - Кэш принадлежит одному процессу, поэтому сервис запускается в одном экземпляре
 - Можно парсить как открытые, так и закрытые каналы (если ты в них состоишь)
 
 ## 📚 Документация
 
 - [DEPLOYMENT.md](DEPLOYMENT.md) — деплой на Railway
+- [docs/deployment/railway-redis.md](docs/deployment/railway-redis.md) — Redis на Railway для хранения сессий
 - [CHANGELOG.md](CHANGELOG.md) — история версий
 - [docs/integrations/n8n-workflow-guide.md](docs/integrations/n8n-workflow-guide.md) — n8n workflow: посты канала и саммари через ИИ
 - [docs/integrations/n8n-telegram-bot.md](docs/integrations/n8n-telegram-bot.md) — Telegram-бот для n8n
@@ -276,7 +305,6 @@ src/
 ## 🤝 Масштабирование
 
 В будущем можно добавить:
-- Сохранение сессий в Redis/PostgreSQL
 - Скачивание медиа-файлов
 - Поиск по сообщениям
 - Экспорт данных в различных форматах

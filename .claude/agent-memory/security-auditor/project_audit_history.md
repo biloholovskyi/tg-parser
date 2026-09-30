@@ -8,6 +8,16 @@ metadata:
 Audit log for this agent. Newest first. Reports live in `docs/reviews/security-audit-YYYY-MM-DD.md`
 (append a section when the file for that date already exists).
 
+- 2026-09-26 — block-10-daily-digest (uncommitted, Redis sessions + digest) → `docs/reviews/block-10-security-audit.md`
+  (Russian, caller-chosen path). 0 CRITICAL / 0 HIGH. Accepted by user (do not re-litigate): all sessions
+  persisted in Redis, AES-256-GCM (ADR adr-session-redis.md); private-channel text sent to xAI (risks.md).
+  New open: M1 `POST /digest/run` no cooldown; M2 any API key can re-mark the global digest session;
+  M3 prompt injection via post text (cross-post translation overwrite in one batch, free-text `source`,
+  Bot API auto-links URLs/@mentions in escaped text); M4 railway-redis.md recommends REDIS_PUBLIC_URL
+  and never says to remove the TCP proxy; M5 (was 08-09 M2) no revocation, records live 30 days.
+  LOW: no AAD, lenient base64 key check, unkeyed SHA-256 record key, Postman stores sessionString in
+  collection vars. npm: 15 runtime (was 13), new = @nestjs/schedule + uuid. Verdict: OK behind trusted keys.
+
 - 2026-09-24 — block-08-09-refactor-strictness-storage (uncommitted) → `docs/reviews/block-08-09-security-audit.md`.
   Closed: file-backed `data/` store (ADR: memory only, user decision), substring error classification.
   New open: M1 pending-login state keyed by phone is dropped/deleted without ownership check

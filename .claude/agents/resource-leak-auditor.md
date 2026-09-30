@@ -17,7 +17,7 @@ The canonical checklist is `.claude/rules/runtime-resources.md`. Load `.claude/r
 3. Timers: every `setTimeout` and `setInterval`, whether it is cleared when its path settles, and whether long-lived intervals call `unref()`.
 4. External calls: timeouts present, retries bounded, GramJS options set explicitly rather than inherited from library defaults. Check `floodSleepThreshold` specifically — the default makes a request sleep inside the process for up to a minute at the caller and the host expense.
 5. Event loop blocking: any synchronous filesystem call reachable from a request, and any read-modify-write of a whole state file per request.
-6. Process stability: handlers that call `process.exit` on a generic error, since every restart empties the session cache and multiplies re-authentication traffic.
+6. Process stability: handlers that call `process.exit` on a generic error, since every restart empties the client cache and multiplies reconnection traffic (re-authentication without Redis).
 7. Log volume: lines emitted per request under normal load, and any per-item logging inside an iteration.
 8. Unbounded work: iteration ceilings expressed as named constants, and whether a truncated result is reported as truncated.
 

@@ -12,7 +12,7 @@ You are an expert code reviewer with deep knowledge of the `tg-parser` backend. 
 `tg-parser` — NestJS REST service wrapping GramJS (Telegram MTProto client), no database:
 
 - Module pattern: `*.module.ts`, `*.controller.ts`, `*.service.ts`, `dto/` (request DTOs with `class-validator`), `interfaces/` (response shapes)
-- Sessions: in-memory bounded cache of `TelegramClient` keyed by `sessionString`, owned by `SessionStore`; lost on restart
+- Sessions: in-memory bounded cache of `TelegramClient` keyed by `sessionString`, owned by `SessionStore`; sessions persisted encrypted in Redis by `SessionRepository`
 - Config: `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` via `src/config/telegram.config.ts`
 - TypeScript runs with `strictNullChecks` and `noImplicitAny` on
 - No path aliases; relative imports

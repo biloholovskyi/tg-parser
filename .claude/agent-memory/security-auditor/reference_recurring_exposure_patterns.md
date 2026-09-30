@@ -24,6 +24,12 @@ than by re-deriving them from source each time.
   `client/users.js` entity resolution throws plain `Error`s that echo the caller's username/string, so
   any classifier that substring-matches `error.message` can be steered by the route parameter.
 
+- LLM output rendered to a Telegram bot: HTML escaping stops tag injection, but the Bot API still
+  auto-links plain URLs and @mentions, so escaped model text remains a phishing vector. Check what the
+  model may write in free-text fields, not only the href path.
+- Deployment docs for Railway plugins drift toward the public proxy URL (`REDIS_PUBLIC_URL`) for admin
+  tasks; check that each doc tells the operator to remove the TCP proxy.
+
 Framework behaviour that decides whether a control holds (verified while auditing, not obvious from
 project source):
 

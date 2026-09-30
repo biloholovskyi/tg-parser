@@ -27,6 +27,8 @@ export const INVALID_SESSION_MESSAGE = 'Session is invalid or revoked, authentic
 export const CHANNEL_UNAVAILABLE_MESSAGE = 'Channel not found or not accessible to this account';
 export const TELEGRAM_UNAVAILABLE_MESSAGE = 'Telegram is unreachable, retry later';
 export const TELEGRAM_FAILED_MESSAGE = 'Telegram request failed';
+export const DIGEST_SESSION_MISSING_MESSAGE = 'No digest session is set, mark one first';
+export const SESSION_STORAGE_UNAVAILABLE_MESSAGE = 'Session storage is unreachable, retry later';
 
 const FLOOD_WAIT_CODE_PATTERN = /^FLOOD(?:_PREMIUM)?_WAIT_(\d+)$/;
 
@@ -147,6 +149,16 @@ export function toHttpException(error: unknown): HttpException {
  */
 export function invalidSessionException(cause?: unknown): UnauthorizedException {
   return new UnauthorizedException(INVALID_SESSION_MESSAGE, { cause });
+}
+
+/** No session is marked for the digest, or the marked one is gone from the store. */
+export function digestSessionMissingException(): UnauthorizedException {
+  return new UnauthorizedException(DIGEST_SESSION_MISSING_MESSAGE);
+}
+
+/** The session store (Redis) did not answer; says nothing about whether the session exists. */
+export function sessionStorageUnavailableException(cause?: unknown): ServiceUnavailableException {
+  return new ServiceUnavailableException(SESSION_STORAGE_UNAVAILABLE_MESSAGE, { cause });
 }
 
 /** Raised at use time when the API credentials are absent; boot stays healthy without them. */

@@ -1,3 +1,10 @@
+[1.5.0] 26.09.2026
+
+- Daily digest: at 23:00 Europe/Kyiv (DIGEST_CRON, DIGEST_TIMEZONE) posts of the last 24 hours from DIGEST_CHANNELS are translated into Russian and folded by Grok into dry topic theses with links to every post, then sent to a Telegram bot; every post is accounted for, the footer reports N of N
+- POST /digest/run starts a digest now (202, 409 while running, 503 when not configured); PUT /digest/session marks the session the digest reads channels with
+- Issued sessions stored in Redis, encrypted with AES-256-GCM and keyed by SHA-256 (REDIS_URL, SESSION_ENCRYPTION_KEY): a restart or deploy no longer requires authenticating again; without Redis the service keeps sessions in memory only
+- Railway Redis setup guide in docs/deployment/railway-redis.md
+
 [1.4.1] 24.09.2026
 
 - Sessions and pending logins kept in process memory only: the JSON files under data/ are no longer read or written, and a restart requires authenticating again

@@ -7,7 +7,7 @@ paths:
 
 Entry point for AI coding assistance on `tg-parser`. Load rules by task, not all at once.
 
-Project: NestJS 10 backend wrapping GramJS (Telegram MTProto client) to parse public and private Telegram channels through a personal user account. REST API, no database, no ORM. Sessions are cached in process memory only.
+Project: NestJS 10 backend wrapping GramJS (Telegram MTProto client) to parse public and private Telegram channels through a personal user account. REST API, no database, no ORM. Sessions are persisted, encrypted, in Redis; live clients are cached in process memory. A daily digest goes through Grok to a Telegram bot.
 
 ## Response Rules
 

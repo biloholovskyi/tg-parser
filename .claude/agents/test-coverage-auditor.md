@@ -15,7 +15,7 @@ Process:
    - Controller routes with no test
    - Request DTOs with no validation test (happy path and rejection)
    - Error branches, especially every mapped Telegram failure in `.claude/rules/telegram.md`
-   - Session-cache paths: hit, miss, eviction, empty cache after restart
+   - Session-cache paths: hit, miss, eviction, empty cache after restart (restore from Redis, 401 without a record, 503 with Redis down)
    - Client lifecycle: disconnect on success and on error
    - Config behavior when `TELEGRAM_API_ID` or `TELEGRAM_API_HASH` is missing
 3. Run `rtk npm run test:cov` when a coverage report is useful and read the line and branch percentages.

@@ -13,7 +13,7 @@ MTProto is Telegram's own wire protocol; GramJS speaks it as a user account (not
 
 - API_CREDENTIAL_ENV = `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`
 - SESSION_CACHE = in-memory `SessionClientCache<TelegramClient>` keyed by `sessionString` (`src/telegram/utils/session-client-cache.ts`), owned by `SessionStore` (`src/telegram/session-store.ts`)
-- SESSION_PERSISTENCE = none (process memory only) — decided in `docs/plans/block-08-09-refactor-strictness-storage/adr-session-storage.md`
+- SESSION_PERSISTENCE = Redis, AES-256-GCM encrypted, keyed by SHA-256 of the session (`src/telegram/session-repository.ts`); memory only when `REDIS_URL` or `SESSION_ENCRYPTION_KEY` is absent — decided in `docs/plans/block-10-daily-digest/adr-session-redis.md`
 - AUTH_STEPS = phone number, SMS code, optional 2FA password
 - FLOOD_WAIT_ERROR = `FLOOD_WAIT_X` (seconds to wait carried in the error)
 - CLIENT_OPTION_BASELINE = explicit GramJS options from named constants (`.claude/rules/runtime-resources.md`)
@@ -25,13 +25,14 @@ MTProto is Telegram's own wire protocol; GramJS speaks it as a user account (not
 - A `sessionString` is a full account credential. Never log it (a prefix or a length is still logging it), never include it in an error message, never write it to a file, never place it in a URL, never return it from an endpoint other than the auth flow that issued it.
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` are read only through `src/config/telegram.config.ts`, never inline from `process.env` elsewhere.
 - Never log phone numbers, SMS codes, 2FA passwords, or full message payloads of private channels.
-- Do not add a persistence layer, a file-backed session store, or a cache library without an explicit user decision — the in-memory model is a deliberate constraint, documented in `.claude/rules/architecture.md`.
+- A session string is persisted only by `SessionRepository`, only encrypted, and only under a SHA-256 key; no other store, file or cache library holds it without an explicit user decision (`.claude/rules/architecture.md`).
+- The digest reads channels only through `TelegramService.readPostsAsDigestAccount`; the digest session string never leaves `src/telegram/`.
 
 ## Known Deviations (open decisions)
 
 State the deviation, never silently rewrite the rule around it. Resolution protocol: `.claude/rules/drift-audit.md`.
 
-- None open. The former file-backed session store was removed by user decision (ADR `docs/plans/block-08-09-refactor-strictness-storage/adr-session-storage.md`): sessions and pending logins live in memory only, nothing is written under `data/`, and `data/` stays git-ignored.
+- None open. Sessions are persisted in Redis by user decision (ADR `docs/plans/block-10-daily-digest/adr-session-redis.md`, which supersedes the memory-only ADR of block 08-09); pending logins live in memory only, nothing is written under `data/`, and `data/` stays git-ignored.
 
 ## Client Lifecycle
 
@@ -39,7 +40,8 @@ State the deviation, never silently rewrite the rule around it. Resolution proto
 - Every code path that creates a client must also have a path that disconnects it; leaked connections are the known failure mode of this service.
 - Check connection state before issuing a request and reconnect explicitly rather than assuming a cached client is still live.
 - On unrecoverable session errors (revoked session, auth key invalid) evict the entry from SESSION_CACHE so the next call re-authenticates cleanly.
-- A restart empties SESSION_CACHE. Code must behave correctly when a supplied `sessionString` has no cached client.
+- A restart empties SESSION_CACHE. A supplied `sessionString` with no cached client is reconnected from its stored record; without a record it is a 401.
+- A session Telegram rejects for good is removed from SESSION_CACHE and from the store.
 - The cache is bounded and idle entries are evicted and disconnected. Sizes, TTLs and the GramJS option baseline live in `.claude/rules/runtime-resources.md`.
 - Every connected client pings Telegram continuously, so an un-evicted client is a permanent running cost, not idle memory.
 
@@ -47,8 +49,9 @@ State the deviation, never silently rewrite the rule around it. Resolution proto
 
 | Telegram condition | HTTP response |
 |--------------------|---------------|
-| Missing `sessionString` header on the posts route | 400 `BadRequestException` |
-| `sessionString` unknown to this process (not cached) | 401 `UnauthorizedException` |
+| Missing `sessionString` header on the posts route or on `PUT /digest/session` | 400 `BadRequestException` |
+| `sessionString` neither cached nor stored | 401 `UnauthorizedException` |
+| Session store (Redis) unreachable | 503 `ServiceUnavailableException` |
 | Session revoked, auth key invalid, not authorized | 401 `UnauthorizedException` |
 | Channel not found or not accessible to this account | 404 `NotFoundException` |
 | Phone code or phone number invalid, 2FA password wrong | 400 `BadRequestException` with a distinguishable message |
@@ -82,8 +85,8 @@ State the deviation, never silently rewrite the rule around it. Resolution proto
 - Leaving a client connected after an error path
 - Retrying immediately on `FLOOD_WAIT_X`
 - Returning raw MTProto errors to the HTTP caller
-- Assuming a session survives a restart
-- Reading `process.env.TELEGRAM_*` outside the config loader
+- Assuming a session survives a restart without a stored record
+- Reading `process.env.TELEGRAM_API_*` outside `src/config/telegram.config.ts`, or any environment variable outside a loader in `src/config/`
 
 ## Related Rules
 

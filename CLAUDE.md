@@ -1,8 +1,8 @@
 # tg-parser
 
-NestJS 10 service that wraps GramJS (a Telegram MTProto client) to parse public and private Telegram channels through a personal user account, not a bot. REST API, TypeScript 5 on Node 20+. No database.
+NestJS 10 service that wraps GramJS (a Telegram MTProto client) to parse public and private Telegram channels through a personal user account, not a bot. REST API, TypeScript 5 on Node 20+. No database; issued sessions are persisted, encrypted, in Redis. A daily digest of configured channels is translated and summarized through Grok and sent to a Telegram bot.
 
-Session model: process memory only, decided in [adr-session-storage.md](docs/plans/block-08-09-refactor-strictness-storage/adr-session-storage.md). Nothing is written to disk; a restart or deploy drops every session and pending login, and callers authenticate again. Adding any persistence is a new user decision, not a code change.
+Session model: issued sessions are stored in Redis, encrypted with AES-256-GCM and keyed by their SHA-256, decided in [adr-session-redis.md](docs/plans/block-10-daily-digest/adr-session-redis.md). A session survives a restart or deploy; without `REDIS_URL` or `SESSION_ENCRYPTION_KEY` the service falls back to process memory only. Pending logins always live in memory. The service itself writes nothing to disk; Redis keeps its encrypted records on its own volume. Any other persistence is a new user decision, not a code change.
 
 ## Source of Truth
 
@@ -36,17 +36,20 @@ Plugin skills never override a project hard rule. Planning, committing, and test
 ## Architecture
 
 ```
-TelegramController (REST) → TelegramService (facade) → AuthService | ChannelService → SessionStore → Telegram MTProto API
+TelegramController (REST) → TelegramService (facade) → AuthService | ChannelService → SessionStore → SessionRepository (Redis) | Telegram MTProto API
+DigestController | DigestScheduler → DigestService → PostCollector (TelegramService) → TranslationService | SummaryService (GrokClient) → BotNotifier (Bot API)
 ```
 
 - `GET /telegram/health` — liveness probe and the Railway health check target
 - `POST /telegram/auth` — multi-step auth: phone, SMS code, optional 2FA password; returns a `sessionString`
 - `GET /telegram/me` — session validity check, `{ status: 'success' | 'failed' }` (`failed` only when the session is missing, unknown or rejected; transport failure is 503, flood wait 429); the `sessionString` travels in the `x-session-string` header
 - `GET /telegram/channel/:channelUsername/posts` — time-filtered posts, `{ posts, count, isTruncated }`, walk capped at `POSTS_MAX_MESSAGES`; the `sessionString` travels in the `x-session-string` header, never in the URL
+- `PUT /digest/session` — marks the session in `x-session-string` as the one the digest reads channels with; 204, 400 without the header, 401 for an unknown or rejected session
+- `POST /digest/run` — starts a digest run now in the background; 202, 409 while a run is in progress, 503 when the digest is not configured
 
 Every route except the health probe requires an `x-api-key` header and is rate limited.
 
-Session model: `TelegramClient` instances are cached in memory in a `SessionClientCache` (`src/telegram/utils/session-client-cache.ts`, a `Map` keyed by `sessionString`) owned by `SessionStore`, the sole owner of the client lifecycle. Everything is lost on process restart, and the cache is per-process, so horizontal scaling breaks session affinity. The cache is bounded (least recently used entry evicted at the ceiling) and idle clients are swept out; every eviction calls `destroy()` on the client, because every connected client pings Telegram continuously. Details: @.claude/rules/architecture.md and @.claude/rules/runtime-resources.md.
+Session model: `TelegramClient` instances are cached in memory in a `SessionClientCache` (`src/telegram/utils/session-client-cache.ts`, a `Map` keyed by `sessionString`) owned by `SessionStore`, the sole owner of the client lifecycle. A session with no cached client is reconnected from its Redis record (`SessionRepository`); the client cache itself is per-process, so horizontal scaling breaks session affinity. The cache is bounded (least recently used entry evicted at the ceiling) and idle clients are swept out; every eviction calls `destroy()` on the client, because every connected client pings Telegram continuously. Details: @.claude/rules/architecture.md and @.claude/rules/runtime-resources.md.
 
 Key source files:
 
@@ -70,6 +73,16 @@ Key source files:
 - [src/shared/utils/http-pipeline.ts](src/shared/utils/http-pipeline.ts) — body-size limit, global `ValidationPipe`, CORS options; called from `src/main.ts`
 - [src/shared/utils/process-handlers.ts](src/shared/utils/process-handlers.ts) — process handlers and the single deliberate shutdown path
 - [src/telegram/interfaces/message.interface.ts](src/telegram/interfaces/message.interface.ts) — `TelegramPost`, `TelegramMedia` and `GetPostsResponse` types
+- [src/telegram/session-repository.ts](src/telegram/session-repository.ts) — encrypted session records and the digest session mark in Redis
+- [src/redis/redis.module.ts](src/redis/redis.module.ts) and [src/redis/redis-client.ts](src/redis/redis-client.ts) — the only Redis client, explicit bounds, closed on shutdown
+- [src/shared/utils/secret-cipher.ts](src/shared/utils/secret-cipher.ts) — AES-256-GCM and SHA-256 helpers
+- [src/config/redis.config.ts](src/config/redis.config.ts) and [src/config/digest.config.ts](src/config/digest.config.ts) — Redis, encryption key and digest settings
+- [src/digest/digest.service.ts](src/digest/digest.service.ts) — digest run: collect, translate, summarize, format, send; one run at a time
+- [src/digest/digest.scheduler.ts](src/digest/digest.scheduler.ts) — daily job from `DIGEST_CRON` / `DIGEST_TIMEZONE`
+- [src/digest/grok/grok.client.ts](src/digest/grok/grok.client.ts) — xAI chat completions with a JSON schema answer, timeout and bounded retries
+- [src/digest/summary.service.ts](src/digest/summary.service.ts) — topics with guaranteed coverage of every post
+- [src/digest/bot-notifier.ts](src/digest/bot-notifier.ts) — Bot API `sendMessage`, sequential, honors `retry_after`
+- [src/digest/utils/digest-formatter.ts](src/digest/utils/digest-formatter.ts) — Telegram HTML rendering and splitting at `BOT_MESSAGE_MAX_CHARS`
 
 ## Quick Commands
 
@@ -165,8 +178,19 @@ Railway via [railway.toml](railway.toml): RAILPACK builder, `npm run start:prod`
 | `PORT` | HTTP port (default 8080, matching `internal_port` in `railway.toml`) |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated browser origin allowlist for CORS; empty or unset means no browser origin is allowed, and `*` is ignored |
 | `API_KEYS` | Comma-separated caller API keys checked against the `x-api-key` header; empty or unset closes every endpoint except the health probe |
+| `REDIS_URL` | Redis address for session persistence (Railway reference `${{Redis.REDIS_URL}}`); unset means sessions live in memory only |
+| `SESSION_ENCRYPTION_KEY` | 32 random bytes in base64 encrypting stored sessions; missing or wrong length means memory only |
+| `DIGEST_CHANNELS` | Comma-separated channel usernames for the daily digest (at most `DIGEST_MAX_CHANNELS`) |
+| `DIGEST_CRON` | Digest schedule, default `0 23 * * *` |
+| `DIGEST_TIMEZONE` | Time zone of the schedule, default `Europe/Kyiv` |
+| `GROK_API_KEY` | xAI API key for translation and summary |
+| `GROK_MODEL` | xAI model, default `grok-4.6` |
+| `TELEGRAM_BOT_TOKEN` | Token of the bot that delivers the digest |
+| `TELEGRAM_BOT_CHAT_ID` | Chat the bot sends the digest to |
 
-Credentials are read only through `src/config/telegram.config.ts`. Boot does not fail when they are missing — the health endpoint stays up and the failure surfaces on first real use.
+The digest is enabled only when `DIGEST_CHANNELS`, `GROK_API_KEY`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_CHAT_ID` are all set; otherwise boot logs one warning naming the missing variables. Redis setup on Railway: [docs/deployment/railway-redis.md](docs/deployment/railway-redis.md).
+
+Credentials are read only through the loaders in `src/config/` (`telegram.config.ts`, `redis.config.ts`, `digest.config.ts`). Boot does not fail when they are missing — the health endpoint stays up and the failure surfaces on first real use.
 
 ## Guards
 

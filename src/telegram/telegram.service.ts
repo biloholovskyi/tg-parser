@@ -6,8 +6,15 @@ import { AuthService } from './auth.service';
 import { ChannelService } from './channel.service';
 import type { AuthResult } from './interfaces/auth-result.interface';
 import type { GetPostsResponse } from './interfaces/message.interface';
+import { SessionRepository } from './session-repository';
 import { SessionStore } from './session-store';
-import { describeError, failWith, isInvalidSessionError } from './utils/telegram-errors';
+import {
+  describeError,
+  digestSessionMissingException,
+  failWith,
+  invalidSessionException,
+  isInvalidSessionError,
+} from './utils/telegram-errors';
 import { withTimeout } from './utils/with-timeout';
 
 /**
@@ -22,6 +29,7 @@ export class TelegramService implements OnModuleDestroy {
     private readonly auth: AuthService,
     private readonly channels: ChannelService,
     private readonly sessions: SessionStore,
+    private readonly repository: SessionRepository,
   ) {}
 
   /** Releases every pending and cached client and stops the background sweeps. */
@@ -67,5 +75,33 @@ export class TelegramService implements OnModuleDestroy {
       this.logger.log(`Session check: failed (${describeError(error)})`);
       return { status: 'failed' };
     }
+  }
+
+  /**
+   * Marks the session the daily digest reads channels with, after proving Telegram accepts it.
+   * An unknown or rejected session is a 401 and leaves the previous mark in place.
+   */
+  async markDigestSession(sessionString: string): Promise<void> {
+    const { status } = await this.checkSession(sessionString);
+    if (status !== 'success') {
+      throw invalidSessionException();
+    }
+    await this.repository.markDigest(sessionString.trim());
+    this.logger.log('Digest session marked');
+  }
+
+  /**
+   * Posts of a channel read with the marked digest session; the session string never leaves
+   * this module. No mark is a 401, like any unusable session.
+   */
+  async readPostsAsDigestAccount(
+    channelUsername: string,
+    hoursBack: number,
+  ): Promise<GetPostsResponse> {
+    const sessionString = await this.repository.loadDigest();
+    if (!sessionString) {
+      throw digestSessionMissingException();
+    }
+    return this.channels.getChannelPosts(channelUsername, sessionString, hoursBack);
   }
 }
