@@ -3,10 +3,11 @@
  * Использование: node examples/client.js
  */
 
-const API_URL = 'http://localhost:3000';
+const API_URL = 'http://localhost:8080';
+// Одно из значений API_KEYS сервиса
+const API_KEY = process.env.TG_PARSER_API_KEY || 'твой_ключ';
 
 // Замени на свои данные
-const PHONE_NUMBER = '+79991234567';
 const CHANNEL_USERNAME = 'durov';
 
 class TelegramParserClient {
@@ -20,6 +21,7 @@ class TelegramParserClient {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-api-key': API_KEY,
       },
       body: JSON.stringify({
         phoneNumber,
@@ -33,7 +35,6 @@ class TelegramParserClient {
     if (data.sessionString) {
       this.sessionString = data.sessionString;
       console.log('✅ Авторизация успешна!');
-      console.log('Session string:', this.sessionString);
     }
 
     return data;
@@ -44,9 +45,13 @@ class TelegramParserClient {
       throw new Error('Нужно сначала авторизоваться');
     }
 
-    const response = await fetch(
-      `${this.baseUrl}/telegram/channel/${channelUsername}/posts?sessionString=${this.sessionString}`
-    );
+    // Строка сессии передаётся только заголовком, в URL сервис её не принимает
+    const response = await fetch(`${this.baseUrl}/telegram/channel/${channelUsername}/posts`, {
+      headers: {
+        'x-api-key': API_KEY,
+        'x-session-string': this.sessionString,
+      },
+    });
 
     return await response.json();
   }
@@ -69,10 +74,11 @@ async function interactiveAuth() {
   const phoneNumber = await question('Введи номер телефона (с +): ');
   let result = await client.authenticate(phoneNumber);
 
+  let phoneCode = null;
   if (result.needsCode) {
     // Шаг 2: Код из SMS
     console.log('\n📱 Код отправлен на твой телефон');
-    const phoneCode = await question('Введи код: ');
+    phoneCode = await question('Введи код: ');
     result = await client.authenticate(phoneNumber, phoneCode);
   }
 

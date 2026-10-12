@@ -1,0 +1,409 @@
+{
+  "info": {
+    "name": "tg-parser - digest",
+    "description": "Блок 10: хранение сессий в Redis и ежедневный дайджест. Все маршруты требуют x-api-key, сессия только в заголовке x-session-string. Сначала папка auth сохраняет sessionString в переменную коллекции. POST /digest/run тратит токены Grok и пишет в реальный чат.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "auth",
+      "item": [
+        {
+          "name": "step 1 - request code",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"phoneNumber\": \"{{phoneNumber}}\"}"
+            }
+          }
+        },
+        {
+          "name": "step 2 - code (and 2FA password if needed), stores sessionString",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "if (body.sessionString) { pm.collectionVariables.set('sessionString', body.sessionString); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "auth"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"phoneNumber\": \"{{phoneNumber}}\", \"phoneCode\": \"{{phoneCode}}\", \"password\": \"{{password}}\"}"
+            }
+          }
+        },
+        {
+          "name": "session check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/telegram/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "telegram",
+                "me"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "digest session",
+      "item": [
+        {
+          "name": "D1 no api key -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/digest/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "digest",
+                "session"
+              ]
+            }
+          }
+        },
+        {
+          "name": "D2 no session header -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/digest/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "digest",
+                "session"
+              ]
+            }
+          }
+        },
+        {
+          "name": "D3 unknown session -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{fakeSessionString}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/digest/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "digest",
+                "session"
+              ]
+            }
+          }
+        },
+        {
+          "name": "D4 mark session -> 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "x-session-string",
+                "value": "{{sessionString}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/digest/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "digest",
+                "session"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "digest run",
+      "item": [
+        {
+          "name": "R1 no api key -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/digest/run",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "digest",
+                "run"
+              ]
+            }
+          }
+        },
+        {
+          "name": "R3 start run -> 202 (R2: 503 when not configured)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 202', function () { pm.response.to.have.status(202); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/digest/run",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "digest",
+                "run"
+              ]
+            }
+          }
+        },
+        {
+          "name": "R4 second start while running -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', function () { pm.response.to.have.status(409); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/digest/run",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "digest",
+                "run"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8080"
+    },
+    {
+      "key": "apiKey",
+      "value": ""
+    },
+    {
+      "key": "phoneNumber",
+      "value": ""
+    },
+    {
+      "key": "phoneCode",
+      "value": ""
+    },
+    {
+      "key": "password",
+      "value": ""
+    },
+    {
+      "key": "sessionString",
+      "value": ""
+    },
+    {
+      "key": "fakeSessionString",
+      "value": "fake-session-string"
+    }
+  ]
+}

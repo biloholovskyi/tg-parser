@@ -1,39 +1,38 @@
 ---
 name: implement-plan-step
-description: Execute implementation plans one phase at a time with strict status tracking and mandatory user approval between phases.
-model: inherit
+description: Execute a single phase of an implementation plan with quality gates and a user checkpoint
 ---
 
 # /implement-plan-step
 
-Execute one approved implementation-plan phase at a time, then pause for user review before continuing.
-
 ## Instructions
 
-- If plan index path is missing, ask for it first. Default shape: `docs/plans/<name>/<name>-implementation-plan.md`.
-- Load `@ai/rules/common/implementation-plans.md` and follow the Phase Execution Loop.
-- Confirm the plan is user-approved before starting any implementation phase. If not approved, stop and request approval.
-- Select the active phase:
-  - If user requested a specific phase, use it.
-  - Otherwise choose the first `Phase XX (todo)` after the latest `done` in the index file.
-- Before implementation, mark active state:
-  - Index: `Phase XX (in_progress) - ...`
-  - Phase file: `Status: in_progress`
-- Implement only the active phase scope and checklist. Do not execute multiple phases in one run.
-- Run all verification commands from the phase file and capture concise output evidence.
-- If any check fails or checklist item remains incomplete:
-  - Keep the phase status as `in_progress`.
-  - Report blockers and exact next fixes.
-  - Stop and wait for user direction.
-- If acceptance criteria are satisfied:
-  - Mark completed checklist items as `[x]`.
-  - Update phase `Evidence` and `Handoff` sections.
-  - Set phase file `Status: done`.
-  - Update index line to `Phase XX (done) - ...`.
-- Present a phase review handoff:
-  - What changed
-  - Verification evidence
-  - Remaining risks/open questions
-  - Suggested next phase
-- Ask explicitly for gate approval: `Approve Phase XX and continue to the next phase?`
-- Do not start the next phase until explicit user approval is received, even when user asks to implement the whole plan.
+Execute ONE phase of an existing plan at a time. Do NOT batch phases unless the plan explicitly marks them as fully parallel.
+
+1. Locate the plan: `docs/plans/<slug>/<slug>-implementation-plan.md`.
+2. Identify the next `todo` or `in_progress` phase.
+3. Load ONLY the plan index, the active phase file, and the rule files listed in that phase's Required Rules section.
+4. Record the phase start: append `- phase-XX start <ISO8601>` to `docs/plans/<slug>/history.md`.
+5. Execute the phase scope and checklist per `.claude/rules/plan-execution.md`. Target-state only: build what the phase describes, not a migration diff.
+6. Self-audit: re-read the scope, run ONLY the verification commands listed in the active phase file, compare the output to the acceptance criteria.
+   - Run nothing that belongs to a later phase. No E2E suite, no refactor/security audit, no version or CHANGELOG sync, no git operation, unless that exact command is listed in THIS phase's verification commands.
+7. If verification fails, loop back to step 5 with fixes. Do not claim the phase is done with failing verification.
+8. Record the phase end and update the plan files:
+   - `history.md`: append `- phase-XX end <ISO8601>`, then the handoff note for the next phase (max 7 bullets).
+   - Phase file: mark status `done`, add an evidence note (1-7 bullets).
+   - Index file: update the status row.
+9. HARD STOP at the user gate. Present results, then stop and wait for explicit user approval before doing anything further. One skill invocation equals one phase. Do not start the next phase and do not begin Finalize work — even a general instruction like "execute the plan" does NOT authorize crossing this gate.
+
+## Quality Gates
+
+- Feature phases ship with tests; delegate test authoring to the `test-writer` agent (`.claude/rules/testing.md`).
+- Post-code phases run the full `/post-code` flow.
+- Audit phases run the `.claude/rules/refactor-security-audit.md` checklist.
+- Phases touching `src/telegram/` verify against `.claude/rules/telegram.md`: no secret logging, every client disconnected, errors mapped to explicit HTTP statuses.
+- Closeout runs in a single Finalize phase, not one gate per item.
+- For `standard`-tier plans the Report closeout runs `/plan-report`; the plan is not `done` until the report file and its index row exist. `small` and bugfix plans skip the report.
+- Never run `git commit` (`.claude/rules/git-conventions.md`).
+
+## Arguments
+
+- `$ARGUMENTS` — optional phase id or file path. If omitted, pick the next non-done phase.

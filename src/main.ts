@@ -1,65 +1,40 @@
+import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { DEFAULT_PORT } from './shared/constants/http.constants';
+import { configureHttpPipeline } from './shared/utils/http-pipeline';
+import { EXIT_CODE_FAILURE, registerProcessHandlers } from './shared/utils/process-handlers';
 
-async function bootstrap() {
-  // Обработка необработанных ошибок
-  process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception:', error);
-    process.exit(1);
-  });
+const LISTEN_HOST = '0.0.0.0';
 
-  process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-    process.exit(1);
-  });
+async function bootstrap(): Promise<void> {
+  const logger = new Logger('Bootstrap');
 
   try {
-    const app = await NestFactory.create(AppModule, {
+    const app = await NestFactory.create<NestExpressApplication>(AppModule, {
       logger: ['error', 'warn', 'log'],
+      bodyParser: false,
     });
 
-    // Enable CORS for accessing from external clients
-    app.enableCors();
+    // Request body limit, global validation and the CORS allowlist
+    configureHttpPipeline(app);
 
-    // Graceful shutdown
-    app.enableShutdownHooks();
+    // Single shutdown path: these handlers close the app, which runs the lifecycle hooks.
+    // Nest's own enableShutdownHooks is deliberately not used: it would add a second
+    // signal listener and re-raise the signal while this close is still running.
+    registerProcessHandlers(app);
 
-    const port = process.env.PORT || 3000;
+    const port = process.env.PORT || DEFAULT_PORT;
+    await app.listen(port, LISTEN_HOST);
 
-    // Слушаем на всех интерфейсах для Railway
-    await app.listen(port, '0.0.0.0');
-
-    // Немедленно логируем готовность - Railway может проверять health check сразу
-    console.log(`🚀 Telegram Parser Service running on port ${port}`);
-    console.log(`✅ Health check available at http://0.0.0.0:${port}/`);
-    console.log(`✅ Application is ready to accept requests`);
-
-    // Обработка сигналов для graceful shutdown
-    process.on('SIGTERM', async () => {
-      console.log('SIGTERM received, shutting down gracefully...');
-      try {
-        await app.close();
-        console.log('Application closed successfully');
-      } catch (error) {
-        console.error('Error during shutdown:', error);
-      }
-      process.exit(0);
-    });
-
-    process.on('SIGINT', async () => {
-      console.log('SIGINT received, shutting down gracefully...');
-      try {
-        await app.close();
-        console.log('Application closed successfully');
-      } catch (error) {
-        console.error('Error during shutdown:', error);
-      }
-      process.exit(0);
-    });
-  } catch (error) {
-    console.error('Failed to start application:', error);
-    process.exit(1);
+    logger.log(`Telegram parser service listening on port ${port}`);
+    logger.log(`Health check available at /telegram/health`);
+  } catch (error: unknown) {
+    // Deliberate startup failure: there is no application to close yet.
+    logger.error(`Failed to start application: ${error instanceof Error ? error.message : error}`);
+    process.exit(EXIT_CODE_FAILURE);
   }
 }
 
-bootstrap();
+void bootstrap();

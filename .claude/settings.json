@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(rtk npm run lint)",
+      "Bash(rtk npm run build)",
+      "Bash(rtk npm run typecheck)",
+      "Bash(rtk npm run format)",
+      "Bash(rtk npm test:*)",
+      "Bash(rtk npm run test:cov)",
+      "Bash(rtk npm run test:e2e)",
+      "Bash(rtk npm ls:*)",
+      "Bash(rtk npm outdated)",
+      "Bash(rtk npm audit)",
+      "Bash(rtk git status:*)",
+      "Bash(rtk git diff:*)",
+      "Bash(rtk git log:*)",
+      "Bash(rtk git show:*)",
+      "Bash(rtk git branch:*)",
+      "Bash(rtk git check-ignore:*)",
+      "Bash(rtk rg:*)",
+      "Bash(rtk read:*)",
+      "Bash(rtk grep:*)",
+      "Bash(rtk ls:*)",
+      "Bash(rtk find:*)",
+      "Bash(rtk err:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./*.session)",
+      "Read(./data/**)",
+      "Write(./data/**)",
+      "Edit(./data/**)",
+      "Bash(rtk git push:*)",
+      "Bash(git push:*)",
+      "Bash(rtk npm publish:*)",
+      "Bash(npm publish:*)"
+    ],
+    "ask": [
+      "Bash(rtk npm install:*)",
+      "Bash(npm install:*)",
+      "Bash(rtk npm uninstall:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(rtk npm ci)",
+      "Bash(rtk npm run start:*)"
+    ]
+  },
+  "enabledMcpjsonServers": ["context7"],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/guard-secrets.js",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Code changed - add/adjust tests (.claude/rules/testing.md) and run /post-code before committing'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Session ending - ensure /post-code passes; commit only on an explicit request (.claude/rules/git-conventions.md)'"
+          }
+        ]
+      }
+    ]
+  }
+}

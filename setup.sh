@@ -66,6 +66,6 @@ echo "1. Отредактируй .env файл (если еще не сдела
 echo "2. Запусти: npm run start:dev"
 echo "3. Протестируй: curl -X POST http://localhost:3000/telegram/auth -H 'Content-Type: application/json' -d '{\"phoneNumber\": \"+79991234567\"}'"
 echo ""
-echo "📚 Документация: README.md, QUICKSTART.md, USAGE.md"
+echo "📚 Документация: README.md"
 echo ""
 

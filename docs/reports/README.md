@@ -1,0 +1,15 @@
+# Отчёты по планам
+
+Индекс отчётов о завершении планов. Правила формирования: `.claude/rules/report-generation.md`.
+
+Отчёт создаётся только для планов уровня `standard`. Планы уровня `small` и багфиксы отчёт не формируют.
+
+Порядок строк — от новых к старым.
+
+| Дата | Компонент | Версия | Отчёт |
+|------|-----------|--------|-------|
+| 2026-09-26 | block-10-daily-digest | 1.5.0 | [block-10-daily-digest-1.5.0-2026-09-26.md](block-10-daily-digest-1.5.0-2026-09-26.md) |
+| 2026-09-24 | block-08-09-refactor-strictness-storage | 1.4.1 | [block-08-09-refactor-strictness-storage-1.4.1-2026-09-24.md](block-08-09-refactor-strictness-storage-1.4.1-2026-09-24.md) |
+| 2026-09-23 | block-03-05-telegram-service | 1.4.1 | [block-03-05-telegram-service-1.4.1-2026-09-23.md](block-03-05-telegram-service-1.4.1-2026-09-23.md) |
+| 2026-09-23 | block-02-api-perimeter | 1.4.1 | [block-02-api-perimeter-1.4.1-2026-09-23.md](block-02-api-perimeter-1.4.1-2026-09-23.md) |
+| 2026-09-22 | block-01-bootstrap | 1.4.0 | [block-01-bootstrap-1.4.0-2026-09-22.md](block-01-bootstrap-1.4.0-2026-09-22.md) |

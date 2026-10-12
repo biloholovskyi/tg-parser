@@ -39,6 +39,10 @@ lerna-debug.log*
 .env.local
 .env.*.local
 
-# Telegram sessions
+# Telegram sessions and runtime state (full account credentials - never commit)
 *.session
+/data/
 
+
+# Exported channel posts (runtime output, not source)
+/posts_data/

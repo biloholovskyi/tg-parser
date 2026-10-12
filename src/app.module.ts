@@ -1,23 +1,8 @@
-import { Controller, Get, HttpCode, HttpStatus, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { AlertsModule } from './alerts/alerts.module';
+import { DigestModule } from './digest/digest.module';
 import { TelegramModule } from './telegram/telegram.module';
-
-@Controller()
-class AppController {
-  @Get()
-  @HttpCode(HttpStatus.OK)
-  root() {
-    // Максимально быстрый ответ для Railway health check
-    return { status: 'ok', service: 'telegram-parser' };
-  }
-
-  @Get('health')
-  @HttpCode(HttpStatus.OK)
-  health() {
-    // Максимально быстрый ответ для Railway health check
-    return { status: 'ok' };
-  }
-}
 
 @Module({
   imports: [
@@ -25,9 +10,9 @@ class AppController {
       isGlobal: true,
       envFilePath: '.env',
     }),
+    AlertsModule,
     TelegramModule,
+    DigestModule,
   ],
-  controllers: [AppController],
-  providers: [],
 })
 export class AppModule {}

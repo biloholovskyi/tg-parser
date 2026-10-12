@@ -55,7 +55,7 @@ echo 1. Отредактируй .env файл (если еще не сдела�
 echo 2. Запусти: npm run start:dev
 echo 3. Протестируй API
 echo.
-echo 📚 Документация: README.md, QUICKSTART.md, USAGE.md
+echo 📚 Документация: README.md
 echo.
 
 pause

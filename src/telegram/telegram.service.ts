@@ -1,544 +1,109 @@
-import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
-import * as fs from 'fs';
-import * as path from 'path';
-import { TelegramClient } from 'telegram';
-import { StringSession } from 'telegram/sessions';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Api } from 'telegram/tl';
-import { computeCheck } from 'telegram/Password';
-import { getTelegramConfig } from '../config/telegram.config';
-import { TelegramPost, TelegramMedia } from './interfaces/message.interface';
+import { AlertService } from '../alerts/alert.service';
+import { HOURS_BACK_DEFAULT } from './dto/messages.dto';
+import { EXTERNAL_CALL_TIMEOUT_MS } from './constants';
+import { AuthService } from './auth.service';
+import { ChannelService } from './channel.service';
+import type { AuthResult } from './interfaces/auth-result.interface';
+import type { GetPostsResponse } from './interfaces/message.interface';
+import { SessionRepository } from './session-repository';
+import { SessionStore } from './session-store';
+import {
+  describeError,
+  digestSessionMissingException,
+  failWith,
+  invalidSessionException,
+  isInvalidSessionError,
+} from './utils/telegram-errors';
+import { withTimeout } from './utils/with-timeout';
 
-interface AuthState {
-  client: TelegramClient;
-  phoneCodeHash: string;
-  phoneNumber: string;
-  createdAt: number;
-}
-
+/**
+ * The module's entry point for the controller: delegates to AuthService, ChannelService and
+ * SessionStore, and owns the shutdown order so pending logins are released before the cache.
+ */
 @Injectable()
-export class TelegramService {
-  private static instanceCount = 0;
-  private instanceId: number;
-  private clients: Map<string, TelegramClient> = new Map();
-  private authStates: Map<string, AuthState> = new Map();
-  private config: { apiId: number; apiHash: string };
-  private readonly dataDir = path.join(process.cwd(), 'data');
-  private readonly authStatesFile = path.join(process.cwd(), 'data', 'auth-states.json');
-  private readonly sessionsFile = path.join(process.cwd(), 'data', 'sessions.json');
+export class TelegramService implements OnModuleDestroy {
+  private readonly logger = new Logger(TelegramService.name);
 
-  constructor() {
-    this.ensureDataDir();
+  constructor(
+    private readonly auth: AuthService,
+    private readonly channels: ChannelService,
+    private readonly sessions: SessionStore,
+    private readonly repository: SessionRepository,
+    private readonly alerts: AlertService,
+  ) {}
 
-    // Загружаем конфигурацию после того как ConfigModule загрузил .env
-    // Не валидируем при создании - только при использовании
-    try {
-      this.config = getTelegramConfig();
-    } catch (error: any) {
-      console.warn('[TelegramService] Config not loaded, will fail on first use:', error.message);
-      this.config = { apiId: 0, apiHash: '' };
-    }
-
-    // Отслеживаем инстансы
-    TelegramService.instanceCount++;
-    this.instanceId = TelegramService.instanceCount;
-    console.log(`[TelegramService] Created instance #${this.instanceId}`);
-
-    // TTL-очистка незавершённых authStates каждые 5 минут (таймаут — 10 минут)
-    const AUTH_STATE_TTL = 10 * 60 * 1000;
-    setInterval(
-      () => {
-        const now = Date.now();
-        for (const [phone, state] of this.authStates) {
-          if (now - state.createdAt > AUTH_STATE_TTL) {
-            state.client.disconnect().catch(() => {});
-            this.authStates.delete(phone);
-            this.deleteAuthState(phone);
-            console.log(`[TelegramService] Cleaned up expired authState for ${phone}`);
-          }
-        }
-      },
-      5 * 60 * 1000,
-    ).unref();
+  /** Releases every pending and cached client and stops the background sweeps. */
+  async onModuleDestroy(): Promise<void> {
+    await this.auth.close();
+    await this.sessions.close();
   }
 
-  /**
-   * Создает клиента для авторизации
-   */
-  private createClient(sessionString: string = ''): TelegramClient {
-    const session = new StringSession(sessionString);
-    return new TelegramClient(session, this.config.apiId, this.config.apiHash, {
-      connectionRetries: 5,
-    });
+  /** One step of the multi-step login; see AuthService.authenticate. */
+  authenticate(phoneNumber: string, phoneCode?: string, password?: string): Promise<AuthResult> {
+    return this.auth.authenticate(phoneNumber, phoneCode, password);
   }
 
-  /**
-   * Авторизация пользователя через телефон
-   */
-  async authenticate(
-    phoneNumber: string,
-    phoneCode?: string,
-    password?: string,
-  ): Promise<{
-    sessionString?: string;
-    needsCode?: boolean;
-    needsPassword?: boolean;
-    message: string;
-  }> {
-    // Валидация конфигурации при использовании
-    if (!this.config.apiId || !this.config.apiHash) {
-      throw new Error('TELEGRAM_API_ID and TELEGRAM_API_HASH must be configured');
-    }
-
-    let client: TelegramClient | null = null;
-    try {
-      // Шаг 1: Отправка кода (если код еще не запрошен)
-      if (!phoneCode) {
-        // Если уже есть незавершённый authState — отключаем старый клиент
-        const existingState = this.authStates.get(phoneNumber);
-        if (existingState) {
-          existingState.client.disconnect().catch(() => {});
-          this.authStates.delete(phoneNumber);
-          this.deleteAuthState(phoneNumber);
-          console.log(`[authenticate] Cleaned up previous authState for ${phoneNumber}`);
-        }
-
-        client = this.createClient();
-
-        // Таймаут для подключения (30 секунд)
-        const connectPromise = client.connect();
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Connection timeout')), 30000),
-        );
-
-        await Promise.race([connectPromise, timeoutPromise]);
-
-        // Таймаут для отправки кода (30 секунд)
-        // sendCode принимает apiId и apiHash как параметры конструктора, не здесь
-        const sendCodePromise = client.sendCode(
-          {
-            apiId: this.config.apiId,
-            apiHash: this.config.apiHash,
-          },
-          phoneNumber,
-        );
-        const sendCodeTimeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Send code timeout')), 30000),
-        );
-
-        const result = (await Promise.race([sendCodePromise, sendCodeTimeoutPromise])) as any;
-
-        // Сохраняем состояние для следующего запроса
-        const createdAt = Date.now();
-        this.authStates.set(phoneNumber, {
-          client: client!,
-          phoneCodeHash: result.phoneCodeHash,
-          phoneNumber,
-          createdAt,
-        });
-        this.saveAuthState(phoneNumber, result.phoneCodeHash, createdAt);
-
-        return {
-          needsCode: true,
-          message: 'Phone code has been sent to your phone. Please provide the code.',
-        };
-      }
-
-      // Шаг 2: Проверка кода
-      let authState = this.authStates.get(phoneNumber);
-      if (!authState) {
-        const persisted = this.loadAuthStates();
-        const saved = persisted.get(phoneNumber);
-        if (saved) {
-          const restoredClient = this.createClient();
-          await restoredClient.connect();
-          authState = {
-            client: restoredClient,
-            phoneCodeHash: saved.phoneCodeHash,
-            phoneNumber,
-            createdAt: saved.createdAt,
-          };
-          this.authStates.set(phoneNumber, authState);
-          console.log(`[authenticate] Restored authState from file for ${phoneNumber}`);
-        }
-      }
-      if (!authState) {
-        throw new Error('Please request code first by sending phoneNumber without code');
-      }
-
-      try {
-        // Таймаут для проверки кода (30 секунд)
-        const signInPromise = authState.client.invoke(
-          new Api.auth.SignIn({
-            phoneNumber: phoneNumber,
-            phoneCodeHash: authState.phoneCodeHash,
-            phoneCode: phoneCode,
-          }),
-        );
-        const signInTimeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Sign in timeout')), 30000),
-        );
-
-        await Promise.race([signInPromise, signInTimeoutPromise]);
-
-        // Успешная авторизация
-        const sessionString = (authState.client.session as StringSession).save();
-
-        // Сохраняем клиента под session string
-        this.clients.set(sessionString, authState.client);
-        this.authStates.delete(phoneNumber);
-        this.saveSession(sessionString);
-        this.deleteAuthState(phoneNumber);
-
-        console.log(`[authenticate] Instance #${this.instanceId}: ✅ Client saved successfully`);
-        console.log('[authenticate] Session string length:', sessionString.length);
-        console.log('[authenticate] Total cached clients:', this.clients.size);
-        console.log(
-          '[authenticate] Clients Map keys:',
-          Array.from(this.clients.keys()).map((k) => k.substring(0, 20)),
-        );
-
-        return {
-          sessionString,
-          message: 'Successfully authenticated',
-        };
-      } catch (error: any) {
-        // Нужен 2FA пароль
-        if (error.message.includes('SESSION_PASSWORD_NEEDED')) {
-          if (!password) {
-            return {
-              needsPassword: true,
-              message: '2FA password is required.',
-            };
-          }
-
-          // Шаг 3: Проверка 2FA пароля
-          const getPasswordPromise = authState.client.invoke(new Api.account.GetPassword());
-          const getPasswordTimeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Get password timeout')), 30000),
-          );
-          const passwordInfo = (await Promise.race([
-            getPasswordPromise,
-            getPasswordTimeoutPromise,
-          ])) as any;
-
-          // Вычисляем SRP hash для пароля
-          const passwordSrp = await computeCheck(passwordInfo, password);
-
-          const checkPasswordPromise = authState.client.invoke(
-            new Api.auth.CheckPassword({
-              password: passwordSrp,
-            }),
-          );
-          const checkPasswordTimeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Check password timeout')), 30000),
-          );
-          await Promise.race([checkPasswordPromise, checkPasswordTimeoutPromise]);
-
-          const sessionString = (authState.client.session as StringSession).save();
-
-          // Сохраняем клиента под session string
-          this.clients.set(sessionString, authState.client);
-          this.authStates.delete(phoneNumber);
-          this.saveSession(sessionString);
-          this.deleteAuthState(phoneNumber);
-
-          console.log(
-            `[authenticate] Instance #${this.instanceId}: ✅ Client saved successfully (2FA)`,
-          );
-          console.log('[authenticate] Session string length:', sessionString.length);
-          console.log('[authenticate] Total cached clients:', this.clients.size);
-          console.log(
-            '[authenticate] Clients Map keys:',
-            Array.from(this.clients.keys()).map((k) => k.substring(0, 20)),
-          );
-
-          return {
-            sessionString,
-            message: 'Successfully authenticated',
-          };
-        } else {
-          throw error;
-        }
-      }
-    } catch (error: any) {
-      console.error('Authentication error:', error);
-
-      // Очистка состояния при ошибке
-      const authState = this.authStates.get(phoneNumber);
-      if (authState) {
-        try {
-          await authState.client.disconnect().catch(() => {});
-        } catch (e: any) {
-          // Игнорируем ошибки при отключении
-        }
-        this.authStates.delete(phoneNumber);
-        this.deleteAuthState(phoneNumber);
-      }
-
-      // Очистка клиента, если он был создан, но не сохранен
-      if (client && !this.clients.has((client.session as StringSession).save())) {
-        try {
-          await client.disconnect().catch(() => {});
-        } catch (e: any) {
-          // Игнорируем ошибки при отключении
-        }
-      }
-
-      const errorMessage = error.message || 'Unknown error';
-      throw new BadRequestException(`Authentication failed: ${errorMessage}`);
-    }
-  }
-
-  /**
-   * Получает клиента из кэша
-   * ВАЖНО: Клиент должен быть создан через authenticate() перед использованием
-   */
-  private async getClient(sessionString: string): Promise<TelegramClient> {
-    // Очищаем от пробелов/переносов
-    const cleanSession = sessionString.trim();
-
-    console.log(`[getClient] Instance #${this.instanceId}: Looking for cached client...`);
-    console.log('[getClient] Total cached clients:', this.clients.size);
-
-    if (!this.clients.has(cleanSession)) {
-      // Попытка восстановить клиента из файла
-      const persisted = this.loadSessions();
-      if (persisted.has(cleanSession)) {
-        console.log('[getClient] Session found in file, restoring client...');
-        const restoredClient = this.createClient(cleanSession);
-        await restoredClient.connect();
-        this.clients.set(cleanSession, restoredClient);
-        console.log('[getClient] ✅ Client restored from file');
-        return restoredClient;
-      }
-
-      console.error('[getClient] ❌ Client not found in cache or file!');
-      throw new BadRequestException(
-        'Session not found. Please authenticate first using POST /telegram/auth',
-      );
-    }
-
-    console.log('[getClient] ✅ Found cached client');
-    return this.clients.get(cleanSession);
-  }
-
-  /**
-   * Получает посты из канала за указанный период
-   */
-  async getChannelPosts(
+  /** Posts of a channel inside the last `hoursBack` hours; see ChannelService.getChannelPosts. */
+  getChannelPosts(
     channelUsername: string,
     sessionString: string,
-    hoursBack: number = 24,
-  ): Promise<{ posts: TelegramPost[]; count: number }> {
-    console.log(
-      `[getChannelPosts] Start fetching posts from @${channelUsername} (last ${hoursBack} hours)`,
-    );
-
-    try {
-      console.log('[getChannelPosts] Getting client from session...');
-      const client = await this.getClient(sessionString);
-      console.log('[getChannelPosts] Client obtained successfully');
-
-      // Убеждаемся, что клиент подключен
-      if (!client.connected) {
-        console.log('[getChannelPosts] Client not connected, connecting...');
-        await client.connect();
-      }
-
-      // Вычисляем время начала периода
-      const startTime = Math.floor(Date.now() / 1000) - hoursBack * 3600;
-      console.log(
-        `[getChannelPosts] Filtering posts after: ${new Date(startTime * 1000).toISOString()}`,
-      );
-
-      const posts: TelegramPost[] = [];
-
-      // Получаем сообщения из канала (увеличиваем лимит для больших периодов)
-      const limit = Math.min(200, hoursBack * 10); // Динамический лимит на основе периода
-
-      console.log(`[getChannelPosts] Starting to iterate messages (limit: ${limit})...`);
-
-      let messageCount = 0;
-      for await (const message of client.iterMessages(channelUsername, {
-        limit,
-      })) {
-        messageCount++;
-
-        if (messageCount === 1) {
-          console.log('[getChannelPosts] First message received');
-        }
-
-        // Проверяем, что сообщение не старше указанного периода
-        if (message.date < startTime) {
-          console.log(
-            `[getChannelPosts] Message ${messageCount} is older than ${hoursBack}h, stopping`,
-          );
-          break;
-        }
-
-        const post = this.parseMessage(message, channelUsername);
-        if (post) {
-          posts.push(post);
-        }
-
-        if (messageCount % 10 === 0) {
-          console.log(
-            `[getChannelPosts] Processed ${messageCount} messages, found ${posts.length} posts`,
-          );
-        }
-      }
-
-      console.log(
-        `[getChannelPosts] Finished! Total messages: ${messageCount}, posts in last ${hoursBack}h: ${posts.length}`,
-      );
-
-      return {
-        posts,
-        count: posts.length,
-      };
-    } catch (error: any) {
-      console.error('[getChannelPosts] Error:', error);
-      console.error('[getChannelPosts] Error message:', error.message);
-      console.error('[getChannelPosts] Error stack:', error.stack);
-
-      if (error.message?.includes('USERNAME_INVALID')) {
-        throw new BadRequestException('Invalid channel username');
-      }
-      if (error.message?.includes('CHANNEL_PRIVATE')) {
-        throw new BadRequestException('Channel is private and you are not a member');
-      }
-      if (error.message?.includes('No user has')) {
-        throw new BadRequestException(
-          `Channel @${channelUsername} not found or you don't have access`,
-        );
-      }
-
-      throw new InternalServerErrorException(`Failed to get posts: ${error.message}`);
-    }
+    hoursBack: number = HOURS_BACK_DEFAULT,
+  ): Promise<GetPostsResponse> {
+    return this.channels.getChannelPosts(channelUsername, sessionString, hoursBack);
   }
 
   /**
-   * Парсит сообщение в формат TelegramPost
-   */
-  private parseMessage(message: any, channelUsername: string): TelegramPost | null {
-    if (!message) return null;
-
-    const media: TelegramMedia[] = [];
-
-    if (message.media) {
-      if (message.photo) {
-        media.push({ type: 'photo' });
-      } else if (message.video) {
-        media.push({ type: 'video' });
-      } else if (message.document) {
-        media.push({ type: 'document' });
-      }
-    }
-
-    // Генерируем прямую ссылку на пост
-    const postUrl = `https://t.me/${channelUsername}/${message.id}`;
-
-    return {
-      id: message.id,
-      text: message.message || '',
-      date: new Date(message.date * 1000),
-      media,
-      postUrl,
-    };
-  }
-
-  /**
-   * Проверяет валидность сессии — возвращает статус без пробрасывания исключений
+   * Reports whether the session is usable: `failed` means the session itself is unknown or
+   * rejected by Telegram. A transport failure or flood wait is not a verdict on the session
+   * and is thrown as the mapped HTTP exception instead.
    */
   async checkSession(sessionString: string): Promise<{ status: 'success' | 'failed' }> {
     try {
-      const client = await this.getClient(sessionString);
-      if (!client.connected) {
-        await client.connect();
-      }
-      await client.invoke(new Api.users.GetUsers({ id: [new Api.InputUserSelf()] }));
+      const client = await this.sessions.getConnected(sessionString);
+      await withTimeout(
+        client.invoke(new Api.users.GetUsers({ id: [new Api.InputUserSelf()] })),
+        EXTERNAL_CALL_TIMEOUT_MS,
+        'Get self',
+      );
+      this.logger.log('Session check: success');
       return { status: 'success' };
-    } catch {
+    } catch (error: unknown) {
+      if (!isInvalidSessionError(error)) {
+        throw failWith(this.logger, 'Session check', error, this.alerts);
+      }
+      await this.sessions.evictIfSessionInvalid(sessionString, error);
+      this.logger.log(`Session check: failed (${describeError(error)})`);
       return { status: 'failed' };
     }
   }
 
   /**
-   * Отключает клиента
+   * Marks the session the daily digest reads channels with, after proving Telegram accepts it.
+   * An unknown or rejected session is a 401 and leaves the previous mark in place.
    */
-  async disconnect(sessionString: string): Promise<void> {
-    const client = this.clients.get(sessionString);
-    if (client) {
-      await client.disconnect();
-      this.clients.delete(sessionString);
+  async markDigestSession(sessionString: string): Promise<void> {
+    const { status } = await this.checkSession(sessionString);
+    if (status !== 'success') {
+      throw invalidSessionException();
     }
-    this.deleteSession(sessionString);
+    await this.repository.markDigest(sessionString.trim());
+    this.logger.log('Digest session marked');
   }
 
-  private ensureDataDir(): void {
-    try {
-      fs.mkdirSync(this.dataDir, { recursive: true });
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to create data directory:', error.message);
+  /**
+   * Posts of a channel read with the marked digest session; the session string never leaves
+   * this module. No mark is a 401, like any unusable session.
+   */
+  async readPostsAsDigestAccount(
+    channelUsername: string,
+    hoursBack: number,
+  ): Promise<GetPostsResponse> {
+    const sessionString = await this.repository.loadDigest();
+    if (!sessionString) {
+      throw digestSessionMissingException();
     }
-  }
-
-  private loadAuthStates(): Map<string, { phoneCodeHash: string; createdAt: number }> {
-    try {
-      if (!fs.existsSync(this.authStatesFile)) return new Map();
-      const parsed = JSON.parse(fs.readFileSync(this.authStatesFile, 'utf-8'));
-      return new Map(Object.entries(parsed));
-    } catch {
-      return new Map();
-    }
-  }
-
-  private saveAuthState(phoneNumber: string, phoneCodeHash: string, createdAt: number): void {
-    try {
-      const existing = this.loadAuthStates();
-      existing.set(phoneNumber, { phoneCodeHash, createdAt });
-      fs.writeFileSync(this.authStatesFile, JSON.stringify(Object.fromEntries(existing), null, 2));
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to save auth state:', error.message);
-    }
-  }
-
-  private deleteAuthState(phoneNumber: string): void {
-    try {
-      const existing = this.loadAuthStates();
-      existing.delete(phoneNumber);
-      fs.writeFileSync(this.authStatesFile, JSON.stringify(Object.fromEntries(existing), null, 2));
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to delete auth state:', error.message);
-    }
-  }
-
-  private loadSessions(): Set<string> {
-    try {
-      if (!fs.existsSync(this.sessionsFile)) return new Set();
-      return new Set(JSON.parse(fs.readFileSync(this.sessionsFile, 'utf-8')) as string[]);
-    } catch {
-      return new Set();
-    }
-  }
-
-  private saveSession(sessionString: string): void {
-    try {
-      const existing = this.loadSessions();
-      existing.add(sessionString);
-      fs.writeFileSync(this.sessionsFile, JSON.stringify(Array.from(existing), null, 2));
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to save session:', error.message);
-    }
-  }
-
-  private deleteSession(sessionString: string): void {
-    try {
-      const existing = this.loadSessions();
-      existing.delete(sessionString);
-      fs.writeFileSync(this.sessionsFile, JSON.stringify(Array.from(existing), null, 2));
-    } catch (error: any) {
-      console.error('[TelegramService] Failed to delete session:', error.message);
-    }
+    return this.channels.getChannelPosts(channelUsername, sessionString, hoursBack);
   }
 }
