@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import * as fs from 'fs';
 import { FakeRedis } from '../../test/fake-redis';
+import type { AlertService } from '../alerts/alert.service';
 import { SECRET_KEY_BYTES, hashSecret } from '../shared/utils/secret-cipher';
 import { MS_IN_SECOND } from '../shared/constants/rate-limit.constants';
 import { TooManyRequestsException } from '../shared/exceptions/too-many-requests.exception';
@@ -129,9 +130,20 @@ jest.mock('telegram/tl', () => {
       Object.assign(this, fields);
     }
   }
+  class MockAuthorization {
+    constructor(fields: object) {
+      Object.assign(this, fields);
+    }
+  }
+  class MockUser {
+    constructor(fields: object) {
+      Object.assign(this, fields);
+    }
+  }
   return {
     Api: {
-      auth: { SignIn: MockRequest, CheckPassword: MockRequest },
+      auth: { SignIn: MockRequest, CheckPassword: MockRequest, Authorization: MockAuthorization },
+      User: MockUser,
       account: { GetPassword: MockRequest },
       users: { GetUsers: MockRequest },
       InputUserSelf: MockRequest,
@@ -185,7 +197,12 @@ jest.mock('fs', () => {
 });
 
 const { Api: mockApi } = jest.requireMock<{
-  Api: { Message: FakeMessageClass; MessageService: FakeMessageClass };
+  Api: {
+    Message: FakeMessageClass;
+    MessageService: FakeMessageClass;
+    User: new (fields: object) => object;
+    auth: { Authorization: new (fields: object) => object };
+  };
 }>('telegram/tl');
 
 const { Logger: MockGramLogger, LogLevel: mockLogLevel } = jest.requireMock<{
@@ -310,12 +327,19 @@ async function authenticateFully(service: TelegramService): Promise<MockTelegram
   return client;
 }
 
+interface MockAlerts {
+  info: jest.Mock;
+  warning: jest.Mock;
+  error: jest.Mock;
+}
+
 /** The production wiring of the module, built by hand: factory -> store -> services -> facade. */
 interface ServiceGraph {
   service: TelegramService;
   sessions: SessionStore;
   repository: SessionRepository;
   channels: ChannelService;
+  alerts: MockAlerts;
 }
 
 /** Memory-only by default, as when REDIS_URL is unset; pass a Redis-backed repository to persist. */
@@ -323,14 +347,17 @@ function buildService(
   repository: SessionRepository = new SessionRepository(null, null),
 ): ServiceGraph {
   const factory = new TelegramClientFactory();
-  const sessions = new SessionStore(factory, repository);
-  const auth = new AuthService(factory, sessions);
-  const channels = new ChannelService(sessions);
+  const alerts: MockAlerts = { info: jest.fn(), warning: jest.fn(), error: jest.fn() };
+  const alertService = alerts as unknown as AlertService;
+  const sessions = new SessionStore(factory, repository, alertService);
+  const auth = new AuthService(factory, sessions, alertService);
+  const channels = new ChannelService(sessions, alertService);
   return {
-    service: new TelegramService(auth, channels, sessions, repository),
+    service: new TelegramService(auth, channels, sessions, repository, alertService),
     sessions,
     repository,
     channels,
+    alerts,
   };
 }
 
@@ -376,6 +403,7 @@ function observedFsCalls(): number {
 describe('TelegramService', () => {
   let service: TelegramService;
   let sessions: SessionStore;
+  let alerts: MockAlerts;
   let loggerSpies: LoggerSpies;
 
   beforeEach(() => {
@@ -385,7 +413,7 @@ describe('TelegramService', () => {
     mockActiveConfig = { ...mockFakeConfig };
     mockConfigError = undefined;
     loggerSpies = spyOnLogger();
-    ({ service, sessions } = buildService());
+    ({ service, sessions, alerts } = buildService());
   });
 
   afterEach(async () => {
@@ -2194,6 +2222,379 @@ describe('TelegramService', () => {
         UnauthorizedException,
         DIGEST_SESSION_MISSING_MESSAGE,
       );
+    });
+  });
+
+  describe('alerts: successful login', () => {
+    const inputUserId = 42;
+    const inputUsername = 'fakeuser';
+    const inputAlertSessionString = '1' + 'A'.repeat(250);
+    const expectedDetailKeys = ['has2fa', 'isPersisted', 'userId', 'username'];
+
+    /** The answer of auth.SignIn / auth.CheckPassword, with fields an alert must never carry. */
+    function buildAuthorization(): object {
+      return new mockApi.auth.Authorization({
+        user: new mockApi.User({
+          id: { toString: () => String(inputUserId) },
+          username: inputUsername,
+          phone: inputPhoneNumber,
+          firstName: 'Fake',
+          lastName: 'Person',
+        }),
+      });
+    }
+
+    /** Step 1 with the session string of the issued login set to the long fake. */
+    async function requestCode(target: TelegramService = service): Promise<MockTelegramClient> {
+      await target.authenticate(inputPhoneNumber);
+      const mockClient = mockCreatedClients[mockCreatedClients.length - 1];
+      mockClient.session.save.mockReturnValue(inputAlertSessionString);
+      return mockClient;
+    }
+
+    function allAlertCalls(source: MockAlerts = alerts): string {
+      return JSON.stringify([
+        source.info.mock.calls,
+        source.warning.mock.calls,
+        source.error.mock.calls,
+      ]);
+    }
+
+    function expectNoSecretInAlerts(source: MockAlerts = alerts): void {
+      const actualSerialized = allAlertCalls(source);
+      expect(actualSerialized).not.toContain(inputPhoneNumber);
+      expect(actualSerialized).not.toContain(inputPhoneNumber.replace(/\D/g, ''));
+      expect(actualSerialized).not.toContain(inputPhoneCode);
+      expect(actualSerialized).not.toContain(inputPassword);
+      expect(actualSerialized).not.toContain(inputAlertSessionString);
+      expect(actualSerialized).not.toContain('Fake');
+      expect(actualSerialized).not.toContain('Person');
+    }
+
+    it('sends one info alert with the account id and username for a login without 2FA', async () => {
+      // Arrange
+      const mockClient = await requestCode();
+      mockClient.invoke.mockResolvedValueOnce(buildAuthorization());
+
+      // Act
+      const actualResult = await service.authenticate(inputPhoneNumber, inputPhoneCode);
+
+      // Assert
+      expect(actualResult.sessionString).toBe(inputAlertSessionString);
+      expect(alerts.info).toHaveBeenCalledTimes(1);
+      expect(alerts.info).toHaveBeenCalledWith('New Telegram login', {
+        userId: String(inputUserId),
+        username: inputUsername,
+        has2fa: false,
+        isPersisted: true,
+      });
+      expect(Object.keys(alerts.info.mock.calls[0][1]).sort()).toEqual(expectedDetailKeys);
+      expect(alerts.warning).not.toHaveBeenCalled();
+      expect(alerts.error).not.toHaveBeenCalled();
+      expectNoSecretInAlerts();
+    });
+
+    it('sends no alert for the code step or the "password required" step, and one with has2fa after the password', async () => {
+      // Arrange
+      const mockClient = await requestCode();
+      mockClient.invoke
+        .mockRejectedValueOnce(rpcError('SESSION_PASSWORD_NEEDED'))
+        .mockRejectedValueOnce(rpcError('SESSION_PASSWORD_NEEDED'))
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce(buildAuthorization());
+      const actualAlertsAfterStep1 = alerts.info.mock.calls.length;
+      const actualStep2 = await service.authenticate(inputPhoneNumber, inputPhoneCode);
+      const actualAlertsAfterStep2 = allAlertCalls();
+
+      // Act
+      const actualStep3 = await service.authenticate(
+        inputPhoneNumber,
+        inputPhoneCode,
+        inputPassword,
+      );
+
+      // Assert
+      expect(actualAlertsAfterStep1).toBe(0);
+      expect(actualStep2.needsPassword).toBe(true);
+      expect(actualAlertsAfterStep2).toBe(JSON.stringify([[], [], []]));
+      expect(actualStep3.sessionString).toBe(inputAlertSessionString);
+      expect(alerts.info).toHaveBeenCalledTimes(1);
+      expect(alerts.info).toHaveBeenCalledWith('New Telegram login', {
+        userId: String(inputUserId),
+        username: inputUsername,
+        has2fa: true,
+        isPersisted: true,
+      });
+      expect(Object.keys(alerts.info.mock.calls[0][1]).sort()).toEqual(expectedDetailKeys);
+      expect(alerts.warning).not.toHaveBeenCalled();
+      expect(alerts.error).not.toHaveBeenCalled();
+      expectNoSecretInAlerts();
+    });
+
+    it('reports null id and username when Telegram answers with an unexpected shape', async () => {
+      // Arrange
+      const mockClient = await requestCode();
+      mockClient.invoke.mockResolvedValueOnce({});
+
+      // Act
+      await service.authenticate(inputPhoneNumber, inputPhoneCode);
+
+      // Assert
+      expect(alerts.info).toHaveBeenCalledWith('New Telegram login', {
+        userId: null,
+        username: null,
+        has2fa: false,
+        isPersisted: true,
+      });
+    });
+
+    it('still logs in when the session is not persisted: one warning and isPersisted false in the info', async () => {
+      // Arrange
+      const fakeRedis = new FakeRedis();
+      const persisted = buildService(
+        new SessionRepository(fakeRedis.asRedis(), {
+          redisUrl: 'redis://fake-redis.invalid:6379',
+          encryptionKey: Buffer.alloc(SECRET_KEY_BYTES, 9),
+        }),
+      );
+      try {
+        const mockClient = await requestCode(persisted.service);
+        mockClient.invoke.mockResolvedValueOnce(buildAuthorization());
+        fakeRedis.failAll();
+
+        // Act
+        const actualResult = await persisted.service.authenticate(inputPhoneNumber, inputPhoneCode);
+
+        // Assert
+        expect(actualResult.sessionString).toBe(inputAlertSessionString);
+        expect(persisted.alerts.warning).toHaveBeenCalledTimes(1);
+        expect(persisted.alerts.warning).toHaveBeenCalledWith('Session not persisted', {
+          reason: expect.any(String),
+        });
+        expect(persisted.alerts.info).toHaveBeenCalledTimes(1);
+        expect(persisted.alerts.info).toHaveBeenCalledWith('New Telegram login', {
+          userId: String(inputUserId),
+          username: inputUsername,
+          has2fa: false,
+          isPersisted: false,
+        });
+        expect(persisted.alerts.error).not.toHaveBeenCalled();
+        expectNoSecretInAlerts(persisted.alerts);
+      } finally {
+        await persisted.service.onModuleDestroy();
+      }
+    });
+
+    it('completes the login when the alert sink returns a promise that never settles', async () => {
+      // Arrange
+      alerts.info.mockReturnValue(new Promise(() => undefined));
+      const mockClient = await requestCode();
+      mockClient.invoke.mockResolvedValueOnce(buildAuthorization());
+
+      // Act
+      const actualResult = service.authenticate(inputPhoneNumber, inputPhoneCode);
+
+      // Assert
+      await expect(actualResult).resolves.toEqual(
+        expect.objectContaining({ sessionString: inputAlertSessionString }),
+      );
+      expect(alerts.info).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('alerts: failed login', () => {
+    it.each(['PHONE_CODE_INVALID', 'PHONE_CODE_EXPIRED'])(
+      'sends no alert when sign-in fails with the caller error %s (400)',
+      async (inputCode) => {
+        // Arrange
+        await service.authenticate(inputPhoneNumber);
+        mockCreatedClients[0].invoke.mockRejectedValueOnce(rpcError(inputCode));
+
+        // Act
+        const actualResult = service.authenticate(inputPhoneNumber, inputPhoneCode);
+
+        // Assert
+        await expect(actualResult).rejects.toBeInstanceOf(BadRequestException);
+        expect(alerts.info).not.toHaveBeenCalled();
+        expect(alerts.warning).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+      },
+    );
+
+    it('sends no alert for a wrong 2FA password (400)', async () => {
+      // Arrange
+      await service.authenticate(inputPhoneNumber);
+      mockCreatedClients[0].invoke
+        .mockRejectedValueOnce(rpcError('SESSION_PASSWORD_NEEDED'))
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(rpcError('PASSWORD_HASH_INVALID'));
+
+      // Act
+      const actualResult = service.authenticate(inputPhoneNumber, inputPhoneCode, inputPassword);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(BadRequestException);
+      expect(alerts.info).not.toHaveBeenCalled();
+      expect(alerts.warning).not.toHaveBeenCalled();
+      expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it('sends one error alert and no info when sign-in fails on connectivity (503)', async () => {
+      // Arrange
+      await service.authenticate(inputPhoneNumber);
+      mockCreatedClients[0].invoke.mockRejectedValueOnce(new Error('fake ECONNRESET'));
+
+      // Act
+      const actualResult = service.authenticate(inputPhoneNumber, inputPhoneCode);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(alerts.error).toHaveBeenCalledTimes(1);
+      expect(alerts.error).toHaveBeenCalledWith(`Auth failed: ${HttpStatus.SERVICE_UNAVAILABLE}`, {
+        operation: 'Auth',
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        error: 'Error: fake ECONNRESET',
+      });
+      expect(alerts.info).not.toHaveBeenCalled();
+      expect(alerts.warning).not.toHaveBeenCalled();
+      const actualSerialized = JSON.stringify(alerts.error.mock.calls);
+      expect(actualSerialized).not.toContain(inputPhoneNumber);
+      expect(actualSerialized).not.toContain(inputPhoneCode);
+    });
+
+    it('sends one warning alert for a flood wait at send-code (429)', async () => {
+      // Arrange
+      mockConfigureClient = (client) => {
+        client.sendCode.mockRejectedValue(rpcError(`FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`));
+      };
+
+      // Act
+      const actualResult = service.authenticate(inputPhoneNumber);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(TooManyRequestsException);
+      expect(alerts.warning).toHaveBeenCalledTimes(1);
+      expect(alerts.warning).toHaveBeenCalledWith(
+        `Auth failed: ${HttpStatus.TOO_MANY_REQUESTS}`,
+        expect.objectContaining({ operation: 'Auth', status: HttpStatus.TOO_MANY_REQUESTS }),
+      );
+      expect(alerts.error).not.toHaveBeenCalled();
+      expect(alerts.info).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('alerts: posts and session check failures', () => {
+    let mockClient: MockTelegramClient;
+
+    beforeEach(async () => {
+      mockClient = await authenticateFully(service);
+      alerts.info.mockClear();
+    });
+
+    it('sends one error alert for a posts failure mapped to 503', async () => {
+      // Arrange
+      mockClient.getMessages.mockRejectedValue(new Error('fake ECONNRESET'));
+
+      // Act
+      const actualResult = service.getChannelPosts(inputChannel, mockFakeSessionString);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(alerts.error).toHaveBeenCalledTimes(1);
+      expect(alerts.error).toHaveBeenCalledWith(
+        `Posts: @${inputChannel} failed: ${HttpStatus.SERVICE_UNAVAILABLE}`,
+        {
+          operation: `Posts: @${inputChannel}`,
+          status: HttpStatus.SERVICE_UNAVAILABLE,
+          error: 'Error: fake ECONNRESET',
+        },
+      );
+      expect(alerts.warning).not.toHaveBeenCalled();
+      expect(JSON.stringify(alerts.error.mock.calls)).not.toContain(mockFakeSessionString);
+    });
+
+    it('sends one warning alert for a posts flood wait (429)', async () => {
+      // Arrange
+      mockClient.getMessages.mockRejectedValue(rpcError(`FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`));
+
+      // Act
+      const actualResult = service.getChannelPosts(inputChannel, mockFakeSessionString);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(TooManyRequestsException);
+      expect(alerts.warning).toHaveBeenCalledTimes(1);
+      expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['CHANNEL_PRIVATE (404)', 'CHANNEL_PRIVATE', NotFoundException],
+      ['SESSION_REVOKED (401)', 'SESSION_REVOKED', UnauthorizedException],
+    ])('sends no alert for a posts failure %s', async (_label, inputCode, expectedClass) => {
+      // Arrange
+      mockClient.getMessages.mockRejectedValue(rpcError(inputCode));
+
+      // Act
+      const actualResult = service.getChannelPosts(inputChannel, mockFakeSessionString);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(expectedClass);
+      expect(alerts.info).not.toHaveBeenCalled();
+      expect(alerts.warning).not.toHaveBeenCalled();
+      expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it('sends no alert for a posts call with an unknown session (401)', async () => {
+      // Act
+      const actualResult = service.getChannelPosts(inputChannel, 'fake-session-never-issued');
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(alerts.error).not.toHaveBeenCalled();
+      expect(alerts.warning).not.toHaveBeenCalled();
+    });
+
+    it('sends one error alert for a session check mapped to 503', async () => {
+      // Arrange
+      mockClient.invoke.mockRejectedValueOnce(new Error('fake ECONNRESET'));
+
+      // Act
+      const actualResult = service.checkSession(mockFakeSessionString);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(alerts.error).toHaveBeenCalledTimes(1);
+      expect(alerts.error).toHaveBeenCalledWith(
+        `Session check failed: ${HttpStatus.SERVICE_UNAVAILABLE}`,
+        expect.objectContaining({ operation: 'Session check' }),
+      );
+      expect(alerts.warning).not.toHaveBeenCalled();
+    });
+
+    it('sends one warning alert for a session-check flood wait (429)', async () => {
+      // Arrange
+      mockClient.invoke.mockRejectedValueOnce(rpcError(`FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`));
+
+      // Act
+      const actualResult = service.checkSession(mockFakeSessionString);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(TooManyRequestsException);
+      expect(alerts.warning).toHaveBeenCalledTimes(1);
+      expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it('sends no alert when the session check finds a rejected session (failed, not thrown)', async () => {
+      // Arrange
+      mockClient.invoke.mockRejectedValueOnce(rpcError('AUTH_KEY_UNREGISTERED'));
+
+      // Act
+      const actualResult = await service.checkSession(mockFakeSessionString);
+
+      // Assert
+      expect(actualResult).toEqual({ status: 'failed' });
+      expect(alerts.info).not.toHaveBeenCalled();
+      expect(alerts.warning).not.toHaveBeenCalled();
+      expect(alerts.error).not.toHaveBeenCalled();
     });
   });
 });

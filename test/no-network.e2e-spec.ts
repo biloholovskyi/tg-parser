@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import Redis from 'ioredis';
 import { TelegramClient } from 'telegram';
+import { AlertService } from '../src/alerts/alert.service';
 import { AppModule } from '../src/app.module';
 import { API_KEYS_ENV_VAR } from '../src/config/api-keys.config';
 import { API_KEY_HEADER, SESSION_HEADER } from '../src/shared/constants/http.constants';
@@ -42,6 +43,8 @@ const INPUT_FAKE_API_KEY = 'fake-e2e-api-key';
 const INPUT_FAKE_PHONE_NUMBER = '+10000000021';
 const INPUT_FAKE_PHONE_CODE = '00000';
 const INPUT_FAKE_SESSION_STRING = 'fake-e2e-session-string';
+/** Event-loop turns given to a background alert send before asserting it never happened. */
+const ALERT_SETTLE_TURNS = 10;
 
 /**
  * Replaces the TelegramService facade. The real lifecycle providers behind it are still built,
@@ -57,8 +60,13 @@ describe('no-network guarantee (e2e)', () => {
   const mockTelegramClientConstructor = TelegramClient as unknown as jest.Mock;
   let app: NestExpressApplication;
   let originalApiKeys: string | undefined;
+  let mockFetch: jest.SpyInstance;
 
   beforeAll(async () => {
+    // Every outbound HTTP call of the service (alerts included) goes through global fetch.
+    mockFetch = jest
+      .spyOn(global, 'fetch')
+      .mockRejectedValue(new Error('fake: no network in the no-network e2e run'));
     originalApiKeys = process.env[API_KEYS_ENV_VAR];
     process.env[API_KEYS_ENV_VAR] = INPUT_FAKE_API_KEY;
 
@@ -78,6 +86,7 @@ describe('no-network guarantee (e2e)', () => {
   afterAll(async () => {
     await closeLifecycleProviders(app);
     await app.close();
+    mockFetch.mockRestore();
 
     if (originalApiKeys === undefined) {
       delete process.env[API_KEYS_ENV_VAR];
@@ -143,6 +152,27 @@ describe('no-network guarantee (e2e)', () => {
     expect(mockTelegramService.getChannelPosts).toHaveBeenCalledTimes(1);
     expect(jest.isMockFunction(mockTelegramClientConstructor)).toBe(true);
     expect(mockTelegramClientConstructor).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('boots with alerts disabled: an alert raised during the run never reaches the network', async () => {
+    // Arrange
+    const actualAlerts = app.get(AlertService);
+
+    // Act
+    actualAlerts.info('fake e2e info');
+    actualAlerts.warning('fake e2e warning');
+    actualAlerts.error('fake e2e error');
+    for (let turn = 0; turn < ALERT_SETTLE_TURNS; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    // Assert
+    expect(process.env.ALERTS_URL).toBe('');
+    expect(process.env.ALERTS_API_KEY).toBe('');
+    expect(actualAlerts).toBeInstanceOf(AlertService);
+    expect(jest.isMockFunction(global.fetch)).toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('builds the real lifecycle providers behind the mock without constructing a GramJS client', () => {
@@ -190,6 +220,7 @@ describe('no-network guarantee (e2e)', () => {
       // Assert
       expect(mockClearInterval).toHaveBeenCalledTimes(EXPECTED_SWEEP_COUNT);
       expect(mockTelegramClientConstructor).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
     } finally {
       mockClearInterval.mockRestore();
     }

@@ -9,6 +9,7 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
+import type { AlertSink } from '../../alerts/interfaces/alert.interface';
 import { TooManyRequestsException } from '../../shared/exceptions/too-many-requests.exception';
 import {
   AUTH_INPUT_ERRORS,
@@ -169,14 +170,29 @@ export function missingConfigException(): InternalServerErrorException {
 /**
  * Maps a failure to its HTTP exception and writes the single outcome line for the request:
  * the operation, the status and a caller-safe error description, never the request payload.
+ * With `alerts`, a 5xx is reported as an error and a flood wait as a warning; failures caused by
+ * the caller (400, 401, 404) are not alerts.
  */
-export function failWith(logger: Logger, operation: string, error: unknown): HttpException {
+export function failWith(
+  logger: Logger,
+  operation: string,
+  error: unknown,
+  alerts?: AlertSink,
+): HttpException {
   const exception = toHttpException(error);
-  const line = `${operation} failed: ${exception.getStatus()} (${describeError(error)})`;
-  if (exception.getStatus() >= HttpStatus.INTERNAL_SERVER_ERROR) {
+  const status = exception.getStatus();
+  const description = describeError(error);
+  const line = `${operation} failed: ${status} (${description})`;
+  const alertMessage = `${operation} failed: ${status}`;
+  const alertDetails = { operation, status, error: description };
+  if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
     logger.error(line);
-  } else {
-    logger.warn(line);
+    alerts?.error(alertMessage, alertDetails);
+    return exception;
+  }
+  logger.warn(line);
+  if (status === HttpStatus.TOO_MANY_REQUESTS) {
+    alerts?.warning(alertMessage, alertDetails);
   }
   return exception;
 }

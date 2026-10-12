@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Api } from 'telegram/tl';
+import { AlertService } from '../alerts/alert.service';
 import { HOURS_BACK_DEFAULT } from './dto/messages.dto';
 import { EXTERNAL_CALL_TIMEOUT_MS } from './constants';
 import { AuthService } from './auth.service';
@@ -30,6 +31,7 @@ export class TelegramService implements OnModuleDestroy {
     private readonly channels: ChannelService,
     private readonly sessions: SessionStore,
     private readonly repository: SessionRepository,
+    private readonly alerts: AlertService,
   ) {}
 
   /** Releases every pending and cached client and stops the background sweeps. */
@@ -69,7 +71,7 @@ export class TelegramService implements OnModuleDestroy {
       return { status: 'success' };
     } catch (error: unknown) {
       if (!isInvalidSessionError(error)) {
-        throw failWith(this.logger, 'Session check', error);
+        throw failWith(this.logger, 'Session check', error, this.alerts);
       }
       await this.sessions.evictIfSessionInvalid(sessionString, error);
       this.logger.log(`Session check: failed (${describeError(error)})`);

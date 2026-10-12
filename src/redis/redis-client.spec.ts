@@ -202,6 +202,128 @@ describe('redis-client', () => {
     });
   });
 
+  describe('createRedisClient with a connection listener', () => {
+    it('does not call the listener on the first connect', () => {
+      // Arrange
+      const mockListener = jest.fn();
+      const actualClient = createRedisClient(inputRedisUrl, mockListener);
+
+      // Act
+      actualClient.emit('ready');
+
+      // Assert
+      expect(mockListener).not.toHaveBeenCalled();
+    });
+
+    it('calls it once with false and the code for an outage of repeated errors, then once with true', () => {
+      // Arrange
+      const mockListener = jest.fn();
+      const actualClient = createRedisClient(inputRedisUrl, mockListener);
+      actualClient.emit('ready');
+
+      // Act
+      for (let attempt = 0; attempt < OUTAGE_ERROR_COUNT; attempt += 1) {
+        actualClient.emit('error', connectionError('ECONNREFUSED'));
+      }
+      actualClient.emit('ready');
+
+      // Assert
+      expect(mockListener.mock.calls).toEqual([[false, 'ECONNREFUSED'], [true]]);
+    });
+
+    it('reports an outage that starts before the first connect, and its recovery', () => {
+      // Arrange
+      const mockListener = jest.fn();
+      const actualClient = createRedisClient(inputRedisUrl, mockListener);
+
+      // Act
+      actualClient.emit('error', connectionError('ECONNREFUSED'));
+      actualClient.emit('error', connectionError('ECONNREFUSED'));
+      actualClient.emit('ready');
+
+      // Assert
+      expect(mockListener.mock.calls).toEqual([[false, 'ECONNREFUSED'], [true]]);
+    });
+
+    it('reports each outage separately after a recovery', () => {
+      // Arrange
+      const mockListener = jest.fn();
+      const actualClient = createRedisClient(inputRedisUrl, mockListener);
+      actualClient.emit('ready');
+
+      // Act
+      actualClient.emit('error', connectionError('ECONNRESET'));
+      actualClient.emit('ready');
+      actualClient.emit('error', connectionError('ETIMEDOUT'));
+      actualClient.emit('error', connectionError('ETIMEDOUT'));
+
+      // Assert
+      expect(mockListener.mock.calls).toEqual([
+        [false, 'ECONNRESET'],
+        [true],
+        [false, 'ETIMEDOUT'],
+      ]);
+    });
+
+    it('does not call it again for a repeated ready while healthy', () => {
+      // Arrange
+      const mockListener = jest.fn();
+      const actualClient = createRedisClient(inputRedisUrl, mockListener);
+
+      // Act
+      actualClient.emit('ready');
+      actualClient.emit('ready');
+
+      // Assert
+      expect(mockListener).not.toHaveBeenCalled();
+    });
+
+    it('passes the error name as the reason when the error has no code', () => {
+      // Arrange
+      const mockListener = jest.fn();
+      const actualClient = createRedisClient(inputRedisUrl, mockListener);
+
+      // Act
+      actualClient.emit('error', new TypeError('fake failure without a code'));
+
+      // Assert
+      expect(mockListener).toHaveBeenCalledWith(false, 'TypeError');
+    });
+
+    it('never passes the URL or its password to the listener', () => {
+      // Arrange
+      const mockListener = jest.fn();
+      const actualClient = createRedisClient(inputRedisUrl, mockListener);
+
+      // Act
+      actualClient.emit('error', connectionError('ECONNREFUSED'));
+      actualClient.emit('ready');
+
+      // Assert
+      const actualSerialized = JSON.stringify(mockListener.mock.calls);
+      expect(actualSerialized).not.toContain(inputRedisUrl);
+      expect(actualSerialized).not.toContain('fake-password');
+    });
+
+    it('keeps logging exactly as without a listener', () => {
+      // Arrange
+      const actualClient = createRedisClient(inputRedisUrl, jest.fn());
+
+      // Act
+      actualClient.emit('ready');
+      actualClient.emit('error', connectionError('ECONNREFUSED'));
+      actualClient.emit('error', connectionError('ECONNREFUSED'));
+      actualClient.emit('ready');
+
+      // Assert
+      expect(mockError.mock.calls).toEqual([['Connection error (ECONNREFUSED)']]);
+      expect(mockLog.mock.calls.map((call) => call[0])).toEqual([
+        'Connected',
+        'Connection restored',
+      ]);
+    });
+  });
+
   describe('closeRedisClient', () => {
     function buildClient(status: string): MockRedisInstance {
       createRedisClient(inputRedisUrl);

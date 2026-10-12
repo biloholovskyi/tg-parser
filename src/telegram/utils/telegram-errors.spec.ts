@@ -771,3 +771,100 @@ describe('failWith', () => {
     expect(mockError).not.toHaveBeenCalled();
   });
 });
+
+describe('failWith with an alert sink', () => {
+  const inputOperation = 'Fake operation';
+  let mockLogger: Logger;
+  let mockWarn: jest.SpyInstance;
+  let mockError: jest.SpyInstance;
+  let mockAlerts: { info: jest.Mock; warning: jest.Mock; error: jest.Mock };
+
+  beforeEach(() => {
+    mockLogger = new Logger('FailWithAlertsSpec');
+    mockWarn = jest.spyOn(mockLogger, 'warn').mockImplementation(() => undefined);
+    mockError = jest.spyOn(mockLogger, 'error').mockImplementation(() => undefined);
+    mockAlerts = { info: jest.fn(), warning: jest.fn(), error: jest.fn() };
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it.each([
+    ['a connectivity failure (503)', new Error('fake ECONNRESET'), HttpStatus.SERVICE_UNAVAILABLE],
+    ['an unknown RPC failure (502)', rpcError('FAKE_UNKNOWN_RPC'), HttpStatus.BAD_GATEWAY],
+    ['a missing config (500)', missingConfigException(), HttpStatus.INTERNAL_SERVER_ERROR],
+  ])('sends one error alert for %s', (_label, inputError, expectedStatus) => {
+    // Act
+    const actualException = failWith(mockLogger, inputOperation, inputError, mockAlerts);
+
+    // Assert
+    expect(actualException.getStatus()).toBe(expectedStatus);
+    expect(mockAlerts.error).toHaveBeenCalledTimes(1);
+    expect(mockAlerts.error).toHaveBeenCalledWith(`${inputOperation} failed: ${expectedStatus}`, {
+      operation: inputOperation,
+      status: expectedStatus,
+      error: describeError(inputError),
+    });
+    expect(mockAlerts.warning).not.toHaveBeenCalled();
+    expect(mockAlerts.info).not.toHaveBeenCalled();
+    expect(mockError).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends one warning alert for a flood wait (429)', () => {
+    // Arrange
+    const inputCode = `FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`;
+
+    // Act
+    const actualException = failWith(mockLogger, inputOperation, rpcError(inputCode), mockAlerts);
+
+    // Assert
+    expect(actualException).toBeInstanceOf(TooManyRequestsException);
+    expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+    expect(mockAlerts.warning).toHaveBeenCalledWith(
+      `${inputOperation} failed: ${HttpStatus.TOO_MANY_REQUESTS}`,
+      { operation: inputOperation, status: HttpStatus.TOO_MANY_REQUESTS, error: inputCode },
+    );
+    expect(mockAlerts.error).not.toHaveBeenCalled();
+    expect(mockAlerts.info).not.toHaveBeenCalled();
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['PHONE_CODE_INVALID', HttpStatus.BAD_REQUEST],
+    ['SESSION_REVOKED', HttpStatus.UNAUTHORIZED],
+    ['CHANNEL_PRIVATE', HttpStatus.NOT_FOUND],
+  ])('sends no alert for a caller-caused %s (%s)', (inputCode, expectedStatus) => {
+    // Act
+    const actualException = failWith(mockLogger, inputOperation, rpcError(inputCode), mockAlerts);
+
+    // Assert
+    expect(actualException.getStatus()).toBe(expectedStatus);
+    expect(mockAlerts.info).not.toHaveBeenCalled();
+    expect(mockAlerts.warning).not.toHaveBeenCalled();
+    expect(mockAlerts.error).not.toHaveBeenCalled();
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['a connectivity failure', new Error('fake ECONNRESET')],
+    ['a flood wait', rpcError(`FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`)],
+    ['a caller error', rpcError('PHONE_CODE_INVALID')],
+  ])(
+    'returns the same exception and writes the same log line for %s with or without a sink',
+    (_label, inputError) => {
+      // Act
+      const actualWithout = failWith(mockLogger, inputOperation, inputError);
+      const actualWith = failWith(mockLogger, inputOperation, inputError, mockAlerts);
+
+      // Assert
+      expect(actualWith.constructor).toBe(actualWithout.constructor);
+      expect(actualWith.getStatus()).toBe(actualWithout.getStatus());
+      expect(actualWith.message).toBe(actualWithout.message);
+      expect(actualWith.cause).toBe(inputError);
+      const actualLines = [...mockWarn.mock.calls, ...mockError.mock.calls];
+      expect(actualLines).toHaveLength(2);
+      expect(actualLines[0]).toEqual(actualLines[1]);
+    },
+  );
+});

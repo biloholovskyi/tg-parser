@@ -1,0 +1,19 @@
+- phase-01 start 2026-10-12T18:24:58+03:00
+- phase-01 end 2026-10-12T18:36:34+03:00
+- Phase 01 handoff (2026-10-12):
+  - `AlertService` (`src/alerts/alert.service.ts`) is global via `AlertsModule`, imported first in `AppModule`; inject it anywhere without importing the module.
+  - `AlertSink` interface lives in `src/alerts/interfaces/alert.interface.ts`; use it as the parameter type for `failWith`, `createRedisClient` callbacks and `registerProcessHandlers`.
+  - Dedup key is `level:message`, so messages must be constant strings; put variable parts into `details`.
+  - `buildAlertPayload` and `sendAlert` are pure and DI-free; `main.ts` boot-failure alert in Phase 03 uses them with `getAlertsConfig()`.
+  - Details keys containing session, phone, password, apihash, apikey, token, authorization or secret are dropped; do not name a harmless field that way (for example `sessionCount`).
+  - Added beyond the scope list: `src/alerts/utils/alert-deduplicator.ts` (bounded dedup map, split out of the service).
+  - E2E not touched yet; Phase 02 overrides `AlertService` in E2E.
+- phase-02 start 2026-10-12T18:39:20+03:00
+- phase-02 end 2026-10-12T18:50:30+03:00
+- Phase 02 handoff (2026-10-12):
+  - `failWith(logger, operation, error, alerts?)` alerts 5xx as error and 429 as warning; every `src/telegram/` caller passes its `AlertService`.
+  - `SessionStore.adopt` returns `{ sessionString, isPersisted }` and warns on a failed record; `AuthService` sends `info('New Telegram login', { userId, username, has2fa, isPersisted })` via `toLoginIdentity` (`src/telegram/utils/login-identity.ts`).
+  - `createRedisClient(url, onConnectionChange?)`; `RedisModule` wires `alertOnConnectionChange(alerts)`. Tests building `RedisModule` alone need a global `AlertService` stub (see `src/redis/redis.module.spec.ts`).
+  - E2E: `test/setup-env.ts` blanks `ALERTS_URL`/`ALERTS_API_KEY` (chosen instead of overriding `AlertService` per spec); `no-network.e2e-spec.ts` asserts `fetch` is never called.
+  - "AlertService throws" is guarded inside `AlertService.enqueue` (try/catch, tested in Phase 01); callers rely on the `AlertSink` never-throws contract and do not wrap calls.
+  - Phase 03 next: digest, process handlers (`registerProcessHandlers(app, alerts)`), `main.ts` boot-failure alert, `BootConfigReporter`.

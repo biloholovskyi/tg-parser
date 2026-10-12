@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import type { TelegramClient } from 'telegram';
 import { computeCheck } from 'telegram/Password';
 import { Api } from 'telegram/tl';
+import { AlertService } from '../alerts/alert.service';
 import {
   AUTH_STATE_SWEEP_INTERVAL_MS,
   AUTH_STATE_TTL_MS,
@@ -11,6 +12,7 @@ import {
 import type { AuthResult } from './interfaces/auth-result.interface';
 import { SessionStore } from './session-store';
 import { TelegramClientFactory } from './telegram-client.factory';
+import { toLoginIdentity } from './utils/login-identity';
 import { failWith, missingConfigException } from './utils/telegram-errors';
 import { withTimeout } from './utils/with-timeout';
 
@@ -21,6 +23,12 @@ interface AuthState {
   client: TelegramClient;
   phoneCodeHash: string;
   createdAt: number;
+}
+
+/** How a login finished: the Telegram answer that authorized it and whether 2FA was needed. */
+interface LoginOutcome {
+  authorization: unknown;
+  has2fa: boolean;
 }
 
 interface SignInStep {
@@ -42,6 +50,7 @@ export class AuthService {
   constructor(
     private readonly factory: TelegramClientFactory,
     private readonly sessions: SessionStore,
+    private readonly alerts: AlertService,
   ) {
     this.sweepTimer = setInterval(() => this.sweepExpired(), AUTH_STATE_SWEEP_INTERVAL_MS);
     this.sweepTimer.unref();
@@ -64,7 +73,7 @@ export class AuthService {
         ? await this.signIn({ phoneNumber, phoneCode, password })
         : await this.requestCode(phoneNumber);
     } catch (error: unknown) {
-      throw failWith(this.logger, 'Auth', error);
+      throw failWith(this.logger, 'Auth', error, this.alerts);
     }
   }
 
@@ -120,63 +129,77 @@ export class AuthService {
   }
 
   private async continueLogin(state: AuthState, step: SignInStep): Promise<AuthResult> {
-    const needsPassword = await this.submitCode(state, step);
-    if (!needsPassword) {
-      return this.completeLogin(step.phoneNumber, state, 'Auth: authenticated');
+    const signedIn = await this.submitCode(state, step);
+    if (signedIn) {
+      return this.completeLogin(step.phoneNumber, state, signedIn);
     }
     if (!step.password) {
       this.logger.log('Auth: 2FA password required');
       return { needsPassword: true, message: '2FA password is required.' };
     }
-    await this.checkPassword(state.client, step.password);
-    return this.completeLogin(step.phoneNumber, state, 'Auth: authenticated with 2FA');
+    const authorization = await this.checkPassword(state.client, step.password);
+    return this.completeLogin(step.phoneNumber, state, { authorization, has2fa: true });
   }
 
-  /** Signs in with the code; true when Telegram asks for the 2FA password instead. */
-  private async submitCode(state: AuthState, step: SignInStep): Promise<boolean> {
+  /** Signs in with the code; null when Telegram asks for the 2FA password instead. */
+  private async submitCode(state: AuthState, step: SignInStep): Promise<LoginOutcome | null> {
     try {
       const request = new Api.auth.SignIn({
         phoneNumber: step.phoneNumber,
         phoneCodeHash: state.phoneCodeHash,
         phoneCode: step.phoneCode,
       });
-      await withTimeout(state.client.invoke(request), EXTERNAL_CALL_TIMEOUT_MS, 'Sign in');
-      return false;
+      const authorization: unknown = await withTimeout(
+        state.client.invoke(request),
+        EXTERNAL_CALL_TIMEOUT_MS,
+        'Sign in',
+      );
+      return { authorization, has2fa: false };
     } catch (error: unknown) {
       if (error instanceof Error && error.message.includes(PASSWORD_NEEDED_ERROR)) {
-        return true;
+        return null;
       }
       throw error;
     }
   }
 
-  private async checkPassword(client: TelegramClient, password: string): Promise<void> {
+  private async checkPassword(client: TelegramClient, password: string): Promise<unknown> {
     const passwordInfo = await withTimeout(
       client.invoke(new Api.account.GetPassword()),
       EXTERNAL_CALL_TIMEOUT_MS,
       'Get password',
     );
     const passwordSrp = await computeCheck(passwordInfo, password);
-    await withTimeout(
+    return withTimeout(
       client.invoke(new Api.auth.CheckPassword({ password: passwordSrp })),
       EXTERNAL_CALL_TIMEOUT_MS,
       'Check password',
     );
   }
 
-  /** Hands the signed-in client to SessionStore and forgets the pending attempt. */
+  /**
+   * Hands the signed-in client to SessionStore, forgets the pending attempt and reports the
+   * login: account id and username only, never the phone number or the session.
+   */
   private async completeLogin(
     phoneNumber: string,
     state: AuthState,
-    outcome: string,
+    outcome: LoginOutcome,
   ): Promise<AuthResult> {
     // Claim the attempt before the await, so a concurrent step 1 cannot release this client;
     // a newer attempt stored for the phone meanwhile is left in place.
     if (this.authStates.get(phoneNumber) === state) {
       this.authStates.delete(phoneNumber);
     }
-    const sessionString = await this.sessions.adopt(state.client);
-    this.logger.log(outcome);
+    const { sessionString, isPersisted } = await this.sessions.adopt(state.client);
+    this.logger.log(outcome.has2fa ? 'Auth: authenticated with 2FA' : 'Auth: authenticated');
+    const { userId, username } = toLoginIdentity(outcome.authorization);
+    this.alerts.info('New Telegram login', {
+      userId,
+      username,
+      has2fa: outcome.has2fa,
+      isPersisted,
+    });
     return { sessionString, message: 'Successfully authenticated' };
   }
 

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { TelegramClient } from 'telegram';
 import { Api } from 'telegram/tl';
+import { AlertService } from '../alerts/alert.service';
 import { MS_IN_SECOND } from '../shared/constants/rate-limit.constants';
 import {
   EXTERNAL_CALL_TIMEOUT_MS,
@@ -30,7 +31,10 @@ interface ChannelWalk {
 export class ChannelService {
   private readonly logger = new Logger(ChannelService.name);
 
-  constructor(private readonly sessions: SessionStore) {}
+  constructor(
+    private readonly sessions: SessionStore,
+    private readonly alerts: AlertService,
+  ) {}
 
   /**
    * Returns posts of a channel inside the last `hoursBack` hours.
@@ -53,7 +57,7 @@ export class ChannelService {
       return { posts, count: posts.length, isTruncated };
     } catch (error: unknown) {
       await this.sessions.evictIfSessionInvalid(sessionString, error);
-      throw failWith(this.logger, `Posts: @${channelUsername}`, error);
+      throw failWith(this.logger, `Posts: @${channelUsername}`, error, this.alerts);
     }
   }
 

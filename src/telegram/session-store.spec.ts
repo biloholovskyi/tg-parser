@@ -1,6 +1,7 @@
 import { Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import type { TelegramClient } from 'telegram';
 import { FakeRedis } from '../../test/fake-redis';
+import type { AlertService } from '../alerts/alert.service';
 import type { SessionPersistenceConfig } from '../config/redis.config';
 import { SECRET_KEY_BYTES, hashSecret } from '../shared/utils/secret-cipher';
 import {
@@ -47,6 +48,20 @@ function asClient(client: MockClient): TelegramClient {
   return client as unknown as TelegramClient;
 }
 
+interface MockAlerts {
+  info: jest.Mock;
+  warning: jest.Mock;
+  error: jest.Mock;
+}
+
+function buildAlerts(): MockAlerts {
+  return { info: jest.fn(), warning: jest.fn(), error: jest.fn() };
+}
+
+function asAlerts(alerts: MockAlerts): AlertService {
+  return alerts as unknown as AlertService;
+}
+
 function rpcError(code: string): Error {
   return Object.assign(new Error(`RPCError: 401: ${code} (caused by fake.Call)`), {
     errorMessage: code,
@@ -63,15 +78,18 @@ async function captureError(actualPromise: Promise<unknown>): Promise<unknown> {
 describe('SessionStore', () => {
   let mockCreate: jest.Mock<TelegramClient, [string?]>;
   let mockLoginClient: MockClient;
+  let mockAlerts: MockAlerts;
   let store: SessionStore;
 
   beforeEach(() => {
     jest.useFakeTimers();
     mockLoginClient = buildClient();
+    mockAlerts = buildAlerts();
     mockCreate = jest.fn(() => asClient(mockLoginClient));
     store = new SessionStore(
       { create: mockCreate } as unknown as TelegramClientFactory,
       new SessionRepository(null, null),
+      asAlerts(mockAlerts),
     );
   });
 
@@ -167,11 +185,11 @@ describe('SessionStore', () => {
       const mockClient = buildClient();
 
       // Act
-      const actualSessionString = await store.adopt(asClient(mockClient));
+      const actualAdopted = await store.adopt(asClient(mockClient));
       const actualCached = await store.getConnected(inputSessionString);
 
       // Assert
-      expect(actualSessionString).toBe(inputSessionString);
+      expect(actualAdopted).toEqual({ sessionString: inputSessionString, isPersisted: true });
       expect(actualCached).toBe(asClient(mockClient));
       expect(mockClient.destroy).not.toHaveBeenCalled();
     });
@@ -407,6 +425,7 @@ describe('SessionStore', () => {
       const builtStore = new SessionStore(
         { create: mockCreate } as unknown as TelegramClientFactory,
         new SessionRepository(fakeRedis.asRedis(), { ...inputConfig, encryptionKey: key }),
+        asAlerts(mockAlerts),
       );
       extraStores.push(builtStore);
       return builtStore;
@@ -436,6 +455,7 @@ describe('SessionStore', () => {
       persistedStore = new SessionStore(
         { create: mockCreate } as unknown as TelegramClientFactory,
         repository,
+        asAlerts(mockAlerts),
       );
     });
 
@@ -450,10 +470,11 @@ describe('SessionStore', () => {
     describe('adopt', () => {
       it('persists the session so the repository knows it', async () => {
         // Act
-        const actualSessionString = await persistedStore.adopt(asClient(buildClient()));
+        const actualAdopted = await persistedStore.adopt(asClient(buildClient()));
 
         // Assert
-        expect(actualSessionString).toBe(inputSessionString);
+        expect(actualAdopted).toEqual({ sessionString: inputSessionString, isPersisted: true });
+        expect(mockAlerts.warning).not.toHaveBeenCalled();
         expect(fakeRedis.values.has(recordKey())).toBe(true);
         expect(fakeRedis.ttls.get(recordKey())).toBe(SESSION_STORE_TTL_S);
         expect(await repository.isKnown(inputSessionString)).toBe(true);
@@ -466,10 +487,10 @@ describe('SessionStore', () => {
         fakeRedis.failNext(new Error('fake ECONNREFUSED'));
 
         // Act
-        const actualSessionString = await persistedStore.adopt(asClient(mockClient));
+        const actualAdopted = await persistedStore.adopt(asClient(mockClient));
 
         // Assert
-        expect(actualSessionString).toBe(inputSessionString);
+        expect(actualAdopted).toEqual({ sessionString: inputSessionString, isPersisted: false });
         expect(mockWarn).toHaveBeenCalledTimes(1);
         expect(String(mockWarn.mock.calls[0][0])).toMatch(/^Session not persisted/);
         expect(fakeRedis.values.size).toBe(0);
@@ -477,6 +498,41 @@ describe('SessionStore', () => {
           asClient(mockClient),
         );
         expect(mockClient.destroy).not.toHaveBeenCalled();
+      });
+
+      it('sends one warning alert with the failure reason when the save fails', async () => {
+        // Arrange
+        jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        fakeRedis.failNext(Object.assign(new Error('fake refused'), { code: 'ECONNREFUSED' }));
+
+        // Act
+        await persistedStore.adopt(asClient(buildClient()));
+
+        // Assert
+        expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+        const [actualMessage, actualDetails] = mockAlerts.warning.mock.calls[0] as [
+          string,
+          Record<string, unknown>,
+        ];
+        expect(actualMessage).toBe('Session not persisted');
+        expect(Object.keys(actualDetails)).toEqual(['reason']);
+        expect(typeof actualDetails.reason).toBe('string');
+        expect(mockAlerts.info).not.toHaveBeenCalled();
+        expect(mockAlerts.error).not.toHaveBeenCalled();
+      });
+
+      it('never puts the session string into the warning alert, even when the error quotes it', async () => {
+        // Arrange
+        jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        fakeRedis.failNext(new Error(`fake failure while saving ${inputSessionString}`));
+
+        // Act
+        await persistedStore.adopt(asClient(buildClient()));
+
+        // Assert
+        expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+        const actualSerialized = JSON.stringify(mockAlerts.warning.mock.calls);
+        expect(actualSerialized).not.toContain(inputSessionString);
       });
     });
 
@@ -740,7 +796,7 @@ describe('SessionStore', () => {
       it('serves a session adopted before the restart from a new store sharing Redis and the key', async () => {
         // Arrange
         const mockAdopted = buildClient();
-        const inputIssued = await persistedStore.adopt(asClient(mockAdopted));
+        const { sessionString: inputIssued } = await persistedStore.adopt(asClient(mockAdopted));
         await persistedStore.close();
         const restartedStore = buildPersistedStore();
 
@@ -775,6 +831,7 @@ describe('SessionStore', () => {
         const memoryStore = new SessionStore(
           { create: mockCreate } as unknown as TelegramClientFactory,
           new SessionRepository(null, null),
+          asAlerts(mockAlerts),
         );
         extraStores.push(memoryStore);
         await memoryStore.adopt(asClient(buildClient()));
@@ -782,6 +839,7 @@ describe('SessionStore', () => {
         const restartedStore = new SessionStore(
           { create: mockCreate } as unknown as TelegramClientFactory,
           new SessionRepository(null, null),
+          asAlerts(mockAlerts),
         );
         extraStores.push(restartedStore);
 

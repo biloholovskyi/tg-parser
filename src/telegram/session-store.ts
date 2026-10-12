@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { TelegramClient } from 'telegram';
 import type { StringSession } from 'telegram/sessions';
+import { AlertService } from '../alerts/alert.service';
 import {
   CONNECTION_LABEL,
   EXTERNAL_CALL_TIMEOUT_MS,
@@ -17,6 +18,13 @@ import {
   isInvalidSessionError,
 } from './utils/telegram-errors';
 import { withTimeout } from './utils/with-timeout';
+
+/** A freshly issued session and whether its record reached the store. */
+export interface AdoptedSession {
+  sessionString: string;
+  /** False when the store failed: the login works until the next restart only. */
+  isPersisted: boolean;
+}
 
 /**
  * Sole owner of the Telegram client lifecycle: every client is connected and released here.
@@ -37,6 +45,7 @@ export class SessionStore {
   constructor(
     private readonly factory: TelegramClientFactory,
     private readonly repository: SessionRepository,
+    private readonly alerts: AlertService,
   ) {
     this.clients.startSweeping();
   }
@@ -57,15 +66,18 @@ export class SessionStore {
    * Caches a freshly authorized client under its session string, records the session and
    * returns the string. A failed record keeps the login usable until the next restart.
    */
-  async adopt(client: TelegramClient): Promise<string> {
+  async adopt(client: TelegramClient): Promise<AdoptedSession> {
     const sessionString = (client.session as StringSession).save();
     await this.clients.set(sessionString, client);
     try {
       await this.repository.save(sessionString);
+      return { sessionString, isPersisted: true };
     } catch (error: unknown) {
-      this.logger.warn(`Session not persisted: ${describeError(error)}`);
+      const reason = describeError(error);
+      this.logger.warn(`Session not persisted: ${reason}`);
+      this.alerts.warning('Session not persisted', { reason });
+      return { sessionString, isPersisted: false };
     }
-    return sessionString;
   }
 
   /**

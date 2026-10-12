@@ -142,3 +142,16 @@ attaches real process handlers. See also [[project-test-run-environment]].
     scratchpad with the Write tool and `cat file >> target` instead.
     Python `open(p, "w")` on Windows writes CRLF and prettier then fails every line: pass
     `newline="\n"` or run `sed -i 's/\r$//'` on the file, then `rtk npx.cmd eslint --fix <spec>`.
+
+21. Alerts (block-11): `jest.spyOn(moduleNamespace, 'fn')` on an `import * as m` works for a function another
+    module imports by name (ts-jest emits CommonJS property access), so a throwing collaborator can be
+    forced without `jest.mock`. For a background queue (`AlertService`), a `flushMicrotasks()` loop of
+    ~1000 `await Promise.resolve()` drains chained sends under fake timers; `jest.advanceTimersByTime` also
+    moves `Date.now`, which the dedup window and failure-log throttle read.
+
+22. Alerts wiring (block-11 phase 02): `toLoginIdentity` uses `instanceof Api.auth.Authorization` / `Api.User`,
+    so any spec mocking `telegram/tl` must define both as real classes, or every login throws a TypeError
+    (`instanceof undefined`). A spec compiling `RedisModule` alone needs a `@Global()` fake module exporting
+    `AlertService` (the real `AlertsModule` is global and absent there). A pure helper spec can build real
+    GramJS objects with `new Api.User({ id: bigInt(42) } as never)` (`big-integer` default import).
+    A spec that asserts "no alert" must `mockClear()` the sink after `authenticateFully`, which sends the login info.
