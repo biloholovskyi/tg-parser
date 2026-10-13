@@ -13,6 +13,8 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const TOTAL_ATTEMPTS = 1 + ALERT_MAX_RETRIES;
+const HTTP_OK_MIN = 200;
+const HTTP_OK_MAX_EXCLUSIVE = 300;
 
 const mockTarget: AlertTarget = { url: 'https://alerts.example.test', apiKey: 'test-alert-key' };
 const inputPayload: AlertPayload = {
@@ -24,6 +26,25 @@ const inputPayload: AlertPayload = {
 
 function statusResponse(status: number): Response {
   return new Response(null, { status });
+}
+
+interface BodyResponse {
+  response: Response;
+  mockCancel: jest.Mock;
+}
+
+/** A response whose body can be cancelled, as real fetch returns for any answer with content. */
+function bodyResponse(
+  status: number,
+  cancelResult: Promise<void> = Promise.resolve(),
+): BodyResponse {
+  const mockCancel = jest.fn().mockReturnValue(cancelResult);
+  const response = {
+    ok: status >= HTTP_OK_MIN && status < HTTP_OK_MAX_EXCLUSIVE,
+    status,
+    body: { cancel: mockCancel },
+  } as unknown as Response;
+  return { response, mockCancel };
 }
 
 function abortError(): Error {
@@ -241,5 +262,99 @@ describe('sendAlert', () => {
     expectSendError(actualOutcome, 'aborted');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(jest.getTimerCount()).toBe(0);
+  });
+  describe('redirects and response bodies', () => {
+    it('refuses to follow a redirect so the API key header is never resent elsewhere', async () => {
+      // Arrange
+      fetchSpy.mockResolvedValue(statusResponse(HTTP_ACCEPTED));
+
+      // Act
+      await startSend();
+
+      // Assert
+      const [, actualInit] = fetchSpy.mock.calls[0];
+      expect(actualInit?.redirect).toBe('error');
+    });
+
+    it('cancels the body of an accepted answer', async () => {
+      // Arrange
+      const { response, mockCancel } = bodyResponse(HTTP_ACCEPTED);
+      fetchSpy.mockResolvedValue(response);
+
+      // Act
+      const actualOutcome = await startSend();
+
+      // Assert
+      expect(actualOutcome).toBe('resolved');
+      expect(mockCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels the body of a refused answer before it throws', async () => {
+      // Arrange
+      const { response, mockCancel } = bodyResponse(HTTP_BAD_REQUEST);
+      fetchSpy.mockResolvedValue(response);
+
+      // Act
+      const actualOutcome = await startSend();
+
+      // Assert
+      expectSendError(actualOutcome, `HTTP ${HTTP_BAD_REQUEST}`);
+      expect(mockCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels the body of every attempt on a retried 503', async () => {
+      // Arrange
+      const mockCancels: jest.Mock[] = [];
+      fetchSpy.mockImplementation(async () => {
+        const { response, mockCancel } = bodyResponse(HTTP_SERVICE_UNAVAILABLE);
+        mockCancels.push(mockCancel);
+        return response;
+      });
+
+      // Act
+      const actualPromise = startSend();
+      await jest.advanceTimersByTimeAsync(ALERT_RETRY_DELAY_MS);
+      const actualOutcome = await actualPromise;
+
+      // Assert
+      expectSendError(actualOutcome, `HTTP ${HTTP_SERVICE_UNAVAILABLE}`);
+      expect(mockCancels).toHaveLength(TOTAL_ATTEMPTS);
+      mockCancels.forEach((mockCancel) => expect(mockCancel).toHaveBeenCalledTimes(1));
+    });
+
+    it('waits for the body cancel before it resolves', async () => {
+      // Arrange
+      let releaseCancel: () => void = () => undefined;
+      const inputCancel = new Promise<void>((resolve) => {
+        releaseCancel = resolve;
+      });
+      fetchSpy.mockResolvedValue(bodyResponse(HTTP_ACCEPTED, inputCancel).response);
+      let isSettled = false;
+
+      // Act
+      const actualPromise = startSend().then((outcome) => {
+        isSettled = true;
+        return outcome;
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const actualSettledBeforeCancel = isSettled;
+      releaseCancel();
+      const actualOutcome = await actualPromise;
+
+      // Assert
+      expect(actualSettledBeforeCancel).toBe(false);
+      expect(actualOutcome).toBe('resolved');
+    });
+
+    it('resolves for an answer without a body', async () => {
+      // Arrange
+      fetchSpy.mockResolvedValue({ ok: true, status: HTTP_ACCEPTED, body: null } as Response);
+
+      // Act
+      const actualOutcome = await startSend();
+
+      // Assert
+      expect(actualOutcome).toBe('resolved');
+    });
   });
 });

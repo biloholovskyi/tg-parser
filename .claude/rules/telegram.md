@@ -25,6 +25,7 @@ MTProto is Telegram's own wire protocol; GramJS speaks it as a user account (not
 - A `sessionString` is a full account credential. Never log it (a prefix or a length is still logging it), never include it in an error message, never write it to a file, never place it in a URL, never return it from an endpoint other than the auth flow that issued it.
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` are read only through `src/config/telegram.config.ts`, never inline from `process.env` elsewhere.
 - Never log phone numbers, SMS codes, 2FA passwords, or full message payloads of private channels.
+- An alert to the external alert service is outbound data: the same secrets never go into its message or details. The login alert identifies the account by Telegram user id and username only, plus the `has2fa` and `isPersisted` flags; errors go in through `describeError`, and `src/alerts/alert-sanitizer.ts` strips secret keys and secret-looking values as a second line of defence, not as permission.
 - A session string is persisted only by `SessionRepository`, only encrypted, and only under a SHA-256 key; no other store, file or cache library holds it without an explicit user decision (`.claude/rules/architecture.md`).
 - The digest reads channels only through `TelegramService.readPostsAsDigestAccount`; the digest session string never leaves `src/telegram/`.
 

@@ -252,6 +252,92 @@ describe('AlertService', () => {
     });
   });
 
+  describe('queue overflow and deduplication', () => {
+    function holdEverySend(mockGates: Deferred[]): void {
+      mockSendAlert.mockImplementation(() => {
+        const gate = deferred();
+        mockGates.push(gate);
+        return gate.promise;
+      });
+    }
+
+    function fillQueue(): void {
+      for (let index = 0; index < ALERT_MAX_CONCURRENT + ALERT_QUEUE_MAX_SIZE; index++) {
+        service.info(`filler ${index}`);
+      }
+    }
+
+    async function releaseAll(mockGates: Deferred[]): Promise<void> {
+      mockSendAlert.mockResolvedValue(undefined);
+      mockGates.forEach((gate) => gate.resolve());
+      await flushMicrotasks();
+    }
+
+    it('sends a warning again inside the window after the same warning was dropped on a full queue', async () => {
+      // Arrange
+      const mockGates: Deferred[] = [];
+      holdEverySend(mockGates);
+      fillQueue();
+      service.warning('fake overflow warning');
+      await releaseAll(mockGates);
+
+      // Act
+      service.warning('fake overflow warning');
+      await flushMicrotasks();
+
+      // Assert
+      const actualWarnings = sentPayloads().filter(
+        (payload) => payload.message === 'fake overflow warning',
+      );
+      expect(actualWarnings).toHaveLength(1);
+      expect(actualWarnings[0].details).toEqual({ droppedAlerts: 1 });
+    });
+
+    it('keeps the dropped count for the next sent alert when the next one is a suppressed repeat', async () => {
+      // Arrange
+      service.error('fake repeat error');
+      await flushMicrotasks();
+      const mockGates: Deferred[] = [];
+      holdEverySend(mockGates);
+      fillQueue();
+      service.info('fake dropped');
+      await releaseAll(mockGates);
+
+      // Act
+      service.error('fake repeat error');
+      service.error('fake fresh error');
+      await flushMicrotasks();
+
+      // Assert
+      const actualMessages = sentPayloads().map((payload) => payload.message);
+      expect(actualMessages.filter((message) => message === 'fake repeat error')).toHaveLength(1);
+      const actualFresh = sentPayloads().find((payload) => payload.message === 'fake fresh error');
+      expect(actualFresh?.details).toEqual({ droppedAlerts: 1 });
+    });
+
+    it('reports the dropped count only once', async () => {
+      // Arrange
+      const mockGates: Deferred[] = [];
+      holdEverySend(mockGates);
+      fillQueue();
+      service.info('fake dropped');
+      await releaseAll(mockGates);
+
+      // Act
+      service.info('fake first after');
+      service.info('fake second after');
+      await flushMicrotasks();
+
+      // Assert
+      const actualFirst = sentPayloads().find((payload) => payload.message === 'fake first after');
+      const actualSecond = sentPayloads().find(
+        (payload) => payload.message === 'fake second after',
+      );
+      expect(actualFirst?.details).toEqual({ droppedAlerts: 1 });
+      expect(actualSecond?.details).toBeUndefined();
+    });
+  });
+
   describe('deduplication', () => {
     it.each(['warning', 'error'] as const)(
       'does not resend a duplicate %s inside the window and reports suppressed repeats after it',
@@ -375,6 +461,37 @@ describe('AlertService', () => {
       expect(loggedText()).toBe('');
     });
 
+    it('sends alerts still queued when shutdown begins before it resolves', async () => {
+      // Arrange
+      const mockGates: Deferred[] = [];
+      mockSendAlert.mockImplementation(() => {
+        const gate = deferred();
+        mockGates.push(gate);
+        return gate.promise;
+      });
+      for (let index = 0; index <= ALERT_MAX_CONCURRENT; index++) {
+        service.error(`fake queued ${index}`);
+      }
+      let isResolved = false;
+
+      // Act
+      const actualShutdown = service.onApplicationShutdown().then(() => {
+        isResolved = true;
+      });
+      mockGates[0].resolve();
+      mockGates[1].resolve();
+      await flushMicrotasks();
+      const actualResolvedWhileQueuedInFlight = isResolved;
+      mockGates[ALERT_MAX_CONCURRENT].resolve();
+      await actualShutdown;
+
+      // Assert
+      expect(actualResolvedWhileQueuedInFlight).toBe(false);
+      expect(mockSendAlert).toHaveBeenCalledTimes(ALERT_MAX_CONCURRENT + 1);
+      expect(isResolved).toBe(true);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
     it('ignores alerts reported after shutdown', async () => {
       // Arrange
       await service.onApplicationShutdown();
@@ -386,6 +503,83 @@ describe('AlertService', () => {
 
       // Assert
       expect(mockSendAlert).not.toHaveBeenCalled();
+    });
+  });
+  describe('beginShutdown', () => {
+    it('ignores alerts reported after it at every level', async () => {
+      // Arrange
+      service.beginShutdown();
+
+      // Act
+      service.info('fake late info');
+      service.warning('fake late warning');
+      service.error('fake late error');
+      await flushMicrotasks();
+
+      // Assert
+      expect(mockSendAlert).not.toHaveBeenCalled();
+    });
+
+    it('still sends alerts queued and in flight before it', async () => {
+      // Arrange
+      const mockGates: Deferred[] = [];
+      mockSendAlert.mockImplementation(() => {
+        const gate = deferred();
+        mockGates.push(gate);
+        return gate.promise;
+      });
+      for (let index = 0; index <= ALERT_MAX_CONCURRENT; index++) {
+        service.error(`fake early ${index}`);
+      }
+
+      // Act
+      service.beginShutdown();
+      service.error('fake late error');
+      mockGates.forEach((gate) => gate.resolve());
+      await flushMicrotasks();
+      mockGates.forEach((gate) => gate.resolve());
+      await flushMicrotasks();
+
+      // Assert
+      const actualMessages = sentPayloads().map((payload) => payload.message);
+      expect(actualMessages).toHaveLength(ALERT_MAX_CONCURRENT + 1);
+      expect(actualMessages).toContain(`fake early ${ALERT_MAX_CONCURRENT}`);
+      expect(actualMessages).not.toContain('fake late error');
+    });
+
+    it('does not abort a send in flight', () => {
+      // Arrange
+      mockSendAlert.mockReturnValue(new Promise<void>(() => undefined));
+      service.error('fake in flight');
+      const actualSignal = mockSendAlert.mock.calls[0][2] as AbortSignal;
+
+      // Act
+      service.beginShutdown();
+
+      // Assert
+      expect(actualSignal.aborted).toBe(false);
+    });
+
+    it('lets the shutdown hook still drain what was queued before it', async () => {
+      // Arrange
+      const mockGate = deferred();
+      mockSendAlert.mockReturnValue(mockGate.promise);
+      service.error('fake pending');
+      service.beginShutdown();
+      let isResolved = false;
+
+      // Act
+      const actualShutdown = service.onApplicationShutdown().then(() => {
+        isResolved = true;
+      });
+      await flushMicrotasks();
+      const actualResolvedBeforeSettle = isResolved;
+      mockGate.resolve();
+      await actualShutdown;
+
+      // Assert
+      expect(actualResolvedBeforeSettle).toBe(false);
+      expect(isResolved).toBe(true);
     });
   });
 });

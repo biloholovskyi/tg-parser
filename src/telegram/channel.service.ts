@@ -57,7 +57,10 @@ export class ChannelService {
       return { posts, count: posts.length, isTruncated };
     } catch (error: unknown) {
       await this.sessions.evictIfSessionInvalid(sessionString, error);
-      throw failWith(this.logger, `Posts: @${channelUsername}`, error, this.alerts);
+      throw failWith(this.logger, `Posts: @${channelUsername}`, error, this.alerts, {
+        operation: 'Posts',
+        details: { channel: channelUsername },
+      });
     }
   }
 

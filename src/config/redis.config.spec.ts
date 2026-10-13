@@ -4,6 +4,7 @@ import {
   REDIS_URL_ENV_VAR,
   SESSION_ENCRYPTION_KEY_ENV_VAR,
   getSessionPersistenceConfig,
+  isSessionPersistenceConfigured,
 } from './redis.config';
 
 const KEY_ENCODING = 'base64';
@@ -142,5 +143,69 @@ describe('getSessionPersistenceConfig', () => {
     expect(actualText).not.toContain('fake-password');
     expect(actualText).not.toContain(inputKey);
     expect(actualText).not.toContain(inputShortKey);
+  });
+});
+
+describe('isSessionPersistenceConfigured', () => {
+  const originalUrl = process.env[REDIS_URL_ENV_VAR];
+  const originalKey = process.env[SESSION_ENCRYPTION_KEY_ENV_VAR];
+  const levels = ['log', 'error', 'warn', 'debug', 'verbose', 'fatal'] as const;
+  let loggerSpies: jest.SpyInstance[];
+
+  /** Sets a variable, or removes it for `undefined`. */
+  function setEnv(name: string, value: string | undefined): void {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
+
+  beforeEach(() => {
+    delete process.env[REDIS_URL_ENV_VAR];
+    delete process.env[SESSION_ENCRYPTION_KEY_ENV_VAR];
+    loggerSpies = levels.map((level) =>
+      jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined),
+    );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    setEnv(REDIS_URL_ENV_VAR, originalUrl);
+    setEnv(SESSION_ENCRYPTION_KEY_ENV_VAR, originalKey);
+  });
+
+  it('is true for a URL and a 32-byte key, also with surrounding whitespace, and logs nothing', () => {
+    // Arrange
+    process.env[REDIS_URL_ENV_VAR] = ` ${inputRedisUrl}\n`;
+    process.env[SESSION_ENCRYPTION_KEY_ENV_VAR] = `${inputKey}\t`;
+
+    // Act
+    const actualResult = isSessionPersistenceConfigured();
+
+    // Assert
+    expect(actualResult).toBe(true);
+    loggerSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
+  });
+
+  it.each([
+    ['the URL is missing', undefined, inputKey],
+    ['the URL is whitespace only', '   ', inputKey],
+    ['the key is missing', inputRedisUrl, undefined],
+    ['the key is too short', inputRedisUrl, inputShortKey],
+    ['the key is too long', inputRedisUrl, inputLongKey],
+    ['the key is not base64 of 32 bytes', inputRedisUrl, 'fake-not-a-key'],
+    ['both are missing', undefined, undefined],
+  ])('is false without logging when %s', (_label, inputUrl, inputKeyValue) => {
+    // Arrange
+    setEnv(REDIS_URL_ENV_VAR, inputUrl);
+    setEnv(SESSION_ENCRYPTION_KEY_ENV_VAR, inputKeyValue);
+
+    // Act
+    const actualResult = isSessionPersistenceConfigured();
+
+    // Assert
+    expect(actualResult).toBe(false);
+    loggerSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
   });
 });

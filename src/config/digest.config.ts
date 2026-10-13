@@ -59,7 +59,7 @@ export function getDigestConfig(): DigestConfig {
     botToken: readEnv(TELEGRAM_BOT_TOKEN_ENV_VAR),
     botChatId: readEnv(TELEGRAM_BOT_CHAT_ID_ENV_VAR),
   };
-  const missing = missingVariables(config);
+  const missing = missingDigestVariables(config);
   if (missing.length > 0) {
     logger.warn(`Digest disabled, not set: ${missing.join(', ')}`);
   }
@@ -106,7 +106,8 @@ function parseChannels(rawChannels: string): string[] {
   return unique.slice(0, DIGEST_MAX_CHANNELS);
 }
 
-function missingVariables(config: Omit<DigestConfig, 'isConfigured'>): string[] {
+/** Names of the variables the digest still needs; empty when it can run. Never their values. */
+export function missingDigestVariables(config: Omit<DigestConfig, 'isConfigured'>): string[] {
   const required: Array<[string, boolean]> = [
     [DIGEST_CHANNELS_ENV_VAR, config.channels.length > 0],
     [GROK_API_KEY_ENV_VAR, Boolean(config.grokApiKey)],

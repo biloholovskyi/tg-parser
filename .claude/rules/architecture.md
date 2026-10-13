@@ -13,6 +13,8 @@ NestJS REST API that wraps GramJS (a Telegram MTProto client library) to read pu
 
 `TelegramController` (REST) → `TelegramService` (facade) → `AuthService` / `ChannelService` → `SessionStore` → `SessionRepository` (Redis) / Telegram MTProto API
 
+Any service → `AlertService` (global, `src/alerts/`) → TechAdminServer `POST /alerts`
+
 `DigestController` / `DigestScheduler` → `DigestService` → `PostCollector` (through `TelegramService`) → `TranslationService` / `SummaryService` (`GrokClient`) → `BotNotifier` (Telegram Bot API)
 
 ## Module Structure
@@ -32,8 +34,9 @@ Controllers must be thin — delegate all logic to the service. Follow the patte
 
 - `src/telegram/` — Telegram account access: `telegram.service.ts` (facade, session check, shutdown order), `auth.service.ts` (multi-step auth, pending attempts), `channel.service.ts` (paged walk), `session-store.ts` (client lifecycle owner), `session-repository.ts` (encrypted session records and the digest mark), `telegram-client.factory.ts` (the only `TelegramClient` constructor); module-local `constants.ts` and `utils/` (`session-client-cache.ts`, `telegram-errors.ts`, `with-timeout.ts`, `message.mapper.ts`)
 - `src/digest/` — daily digest: `digest.service.ts` (run orchestration, one run at a time), `digest.scheduler.ts` (daily job), `digest.controller.ts`, `post-collector.ts`, `translation.service.ts`, `summary.service.ts`, `bot-notifier.ts`, `grok/` (client, prompts, schemas), `utils/` (formatter, splitter, coverage); GramJS is never imported here
+- `src/alerts/` — outbound alerts: `alert.service.ts` (global `AlertService`, queue, dedup, shutdown drain), `alert-sender.ts` (one `POST /alerts`), `alert-sanitizer.ts` (secret stripping), `boot-config-reporter.ts` (incomplete configuration at boot), `boot-failure-alert.ts` (failed start, no DI), `utils/alert-deduplicator.ts`; `AlertsModule` is `@Global()` and imported in `AppModule` before `TelegramModule` and `DigestModule`
 - `src/redis/` — the only Redis client (`redis-client.ts`) and its module, closed on application shutdown
-- `src/config/` — env-backed configuration loaders (`telegram.config.ts`, `cors.config.ts`, `api-keys.config.ts`, `redis.config.ts`, `digest.config.ts`)
+- `src/config/` — env-backed configuration loaders (`telegram.config.ts`, `cors.config.ts`, `api-keys.config.ts`, `redis.config.ts`, `digest.config.ts`, `alerts.config.ts`)
 - `src/shared/` — cross-cutting helpers: `constants/` (`http.constants.ts`, `rate-limit.constants.ts`, `channel-username.constants.ts`), `utils/` (`http-pipeline.ts`, `process-handlers.ts`, `rate-limit-store.ts`, `secret-cipher.ts`, header readers), `guards/` (caller authentication and rate limits), `decorators/` (route markers and the session parameter), `exceptions/` (the 429 response)
 - `src/app.module.ts` — root module
 - `src/main.ts` — bootstrap: creates the app with `bodyParser: false`, calls `configureHttpPipeline`, registers the process handlers that own the single shutdown path (Nest `enableShutdownHooks` is deliberately not used), binds the port

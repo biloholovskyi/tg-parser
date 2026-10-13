@@ -12,31 +12,34 @@ import {
 } from './constants';
 import type {
   AlertDetails,
+  AlertGate,
   AlertLevel,
   AlertPayload,
-  AlertSink,
 } from './interfaces/alert.interface';
 import { AlertDeduplicator } from './utils/alert-deduplicator';
+import { FailureLogThrottle } from './utils/failure-log-throttle';
+import { IdleSignal } from './utils/idle-signal';
 
 /**
  * Reports alerts to the alert service in the background. A call queues the alert and returns at
  * once; nothing here ever throws to the caller. The queue, the concurrency and the dedup map are
- * bounded, and shutdown waits for the queue at most ALERT_DRAIN_TIMEOUT_MS.
+ * bounded. `beginShutdown` stops accepting new alerts, and the shutdown hook waits for the queue
+ * at most ALERT_DRAIN_TIMEOUT_MS.
  */
 @Injectable()
-export class AlertService implements AlertSink, OnApplicationShutdown {
+export class AlertService implements AlertGate, OnApplicationShutdown {
   private readonly logger = new Logger(AlertService.name);
   private readonly queue: AlertPayload[] = [];
   private readonly deduplicator = new AlertDeduplicator(
     ALERT_DEDUP_WINDOW_MS,
     ALERT_DEDUP_MAX_KEYS,
   );
+  private readonly failureLog = new FailureLogThrottle(ALERT_DEDUP_WINDOW_MS);
+  private readonly idle = new IdleSignal();
   private readonly shutdown = new AbortController();
-  private idleWaiters: Array<() => void> = [];
+  private isAccepting = true;
   private inFlightCount = 0;
   private droppedCount = 0;
-  private failedCount = 0;
-  private lastFailureLoggedAt?: number;
 
   constructor(@Inject(ALERTS_CONFIG) private readonly config: AlertsConfig) {}
 
@@ -55,24 +58,40 @@ export class AlertService implements AlertSink, OnApplicationShutdown {
     this.enqueue('error', message, details);
   }
 
+  /**
+   * Stops accepting alerts while queued ones still go out: requests cut off by a deliberate
+   * shutdown would otherwise report themselves as failures on every deploy.
+   */
+  beginShutdown(): void {
+    this.isAccepting = false;
+  }
+
   /** Waits for queued alerts up to ALERT_DRAIN_TIMEOUT_MS, then aborts what is still running. */
   async onApplicationShutdown(): Promise<void> {
-    await this.waitForIdle(ALERT_DRAIN_TIMEOUT_MS);
+    this.isAccepting = false;
+    if (!this.isIdle) {
+      await this.idle.wait(ALERT_DRAIN_TIMEOUT_MS);
+    }
     this.queue.length = 0;
     this.shutdown.abort();
   }
 
+  private get isIdle(): boolean {
+    return this.inFlightCount === 0 && this.queue.length === 0;
+  }
+
   private enqueue(level: AlertLevel, message: string, details?: AlertDetails): void {
-    if (!this.config.isEnabled || this.shutdown.signal.aborted) {
+    if (!this.config.isEnabled || !this.isAccepting) {
       return;
     }
     try {
-      const counters = this.takeCounters(level, message);
-      if (!counters) {
-        return;
-      }
+      // A full queue drops the alert before it can open a dedup window it never used.
       if (this.queue.length >= ALERT_QUEUE_MAX_SIZE) {
         this.droppedCount++;
+        return;
+      }
+      const counters = this.takeCounters(level, message);
+      if (!counters) {
         return;
       }
       const merged = Object.keys(counters).length > 0 ? { ...details, ...counters } : details;
@@ -95,7 +114,7 @@ export class AlertService implements AlertSink, OnApplicationShutdown {
         counters.suppressedRepeats = decision.previousSuppressedCount;
       }
     }
-    if (this.droppedCount > 0 && this.queue.length < ALERT_QUEUE_MAX_SIZE) {
+    if (this.droppedCount > 0) {
       counters.droppedAlerts = this.droppedCount;
       this.droppedCount = 0;
     }
@@ -121,46 +140,19 @@ export class AlertService implements AlertSink, OnApplicationShutdown {
     } finally {
       this.inFlightCount--;
       this.pump();
-      this.notifyIfIdle();
+      if (this.isIdle) {
+        this.idle.notify();
+      }
     }
   }
 
   /** One log line per ALERT_DEDUP_WINDOW_MS while the alert service keeps failing. */
   private logFailure(error: unknown): void {
-    this.failedCount++;
-    const now = Date.now();
-    if (
-      this.lastFailureLoggedAt !== undefined &&
-      now - this.lastFailureLoggedAt < ALERT_DEDUP_WINDOW_MS
-    ) {
+    const failedCount = this.failureLog.record();
+    if (failedCount === null) {
       return;
     }
     const reason = error instanceof Error ? error.message : 'unknown';
-    this.logger.warn(
-      `Alert not delivered: ${reason} (${this.failedCount} failed since last report)`,
-    );
-    this.lastFailureLoggedAt = now;
-    this.failedCount = 0;
-  }
-
-  private notifyIfIdle(): void {
-    if (this.inFlightCount === 0 && this.queue.length === 0) {
-      const waiters = this.idleWaiters;
-      this.idleWaiters = [];
-      waiters.forEach((resolve) => resolve());
-    }
-  }
-
-  private waitForIdle(timeoutMs: number): Promise<void> {
-    if (this.inFlightCount === 0 && this.queue.length === 0) {
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, timeoutMs);
-      this.idleWaiters.push(() => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+    this.logger.warn(`Alert not delivered: ${reason} (${failedCount} failed since last report)`);
   }
 }

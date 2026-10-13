@@ -64,7 +64,11 @@ async function sendOnce(
       headers: { 'Content-Type': 'application/json', [API_KEY_HEADER]: target.apiKey },
       body: JSON.stringify(payload),
       signal: controller.signal,
+      // A redirect would resend the API key header to wherever it points.
+      redirect: 'error',
     });
+    // The answer is not needed; releasing the body frees the connection at once.
+    await response.body?.cancel();
     if (!response.ok) {
       throw new AlertSendError(
         `HTTP ${response.status}`,

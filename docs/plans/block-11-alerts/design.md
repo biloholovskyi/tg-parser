@@ -21,7 +21,10 @@
 - Подавление дублей: алерт warning/error с тем же ключом (`level` + `message`) в течение ALERT_DEDUP_WINDOW_MS не отправляется; число подавленных добавляется в `details` следующего алерта с этим ключом. Карта ключей ограничена ALERT_DEDUP_MAX_KEYS. Info-алерты о логине не подавляются.
 - Неудачная отправка пишет в лог одну строку (статус или причина, без ключа и тела); алерт о неудачном алерте не отправляется.
 - Без `ALERTS_URL` или `ALERTS_API_KEY` сервис выключен: одно предупреждение при старте, вызовы — no-op.
+- `closeApplication` первым делом вызывает `beginShutdown`: новые алерты больше не принимаются, уже стоящие в очереди уходят. Так деплой не порождает ложных ошибок от прерванных запросов.
 - `onApplicationShutdown` ждёт очередь не дольше ALERT_DRAIN_TIMEOUT_MS, затем отбрасывает остаток.
+- Переполненная очередь отбрасывает алерт до проверки повторов, поэтому отброшенный алерт не открывает окно подавления.
+- Запрос идёт с `redirect: 'error'`; `ALERTS_URL` — только `https`, `http` только для `localhost` и `*.railway.internal`, без логина, query и fragment.
 - `serviceName` — из `ALERTS_SERVICE_NAME`, по умолчанию `tg-parser`.
 
 ## Карта алертов
@@ -32,11 +35,10 @@
 | Сбой старта | error | `main.ts` через `alert-sender` напрямую, до `process.exit` |
 | Uncaught exception | error | `registerProcessHandlers`, до закрытия приложения |
 | Unhandled rejection | error | `registerProcessHandlers` |
-| Ошибка при остановке | warning | `closeApplication` |
 | Связь с Redis потеряна | error | колбэк состояния из `createRedisClient`, подписка в `RedisModule` |
 | Связь с Redis восстановлена | info | там же |
 | Сессия не сохранена | warning | `SessionStore.adopt` |
-| Telegram 5xx (недоступен, 502, нет конфигурации) | error | `failWith` через приёмник алертов |
+| Telegram 5xx (недоступен, 502, нет конфигурации) | error | `failWith` через приёмник алертов; для постов операция `Posts`, канал в `details` |
 | Flood wait 429 | warning | `failWith` через приёмник алертов |
 | Дайджест упал | error | `DigestService.reportFailure`: триггер, статус, причина |
 | Уведомление о сбое не доставлено | error | `DigestService.reportFailure` |
@@ -49,7 +51,7 @@
 
 ## Связи без нарушения границ
 
-- `failWith(logger, operation, error, alerts?)` получает необязательный приёмник `AlertSink` (интерфейс из `src/alerts/interfaces/`); сервисы `src/telegram/` передают свой `AlertService`.
+- `failWith(logger, operation, error, alerts?, alertContext?)` получает необязательный приёмник `AlertSink` и постоянное имя операции для алерта (интерфейс из `src/alerts/interfaces/`); сервисы `src/telegram/` передают свой `AlertService`.
 - `createRedisClient(url, onConnectionChange?)` вызывает колбэк при переходе «потеряна» и «восстановлена»; `RedisModule` вешает на него `AlertService`.
 - `registerProcessHandlers(app, alerts)` получает `AlertService` из `app.get` в `main.ts`.
 - Конфиг-загрузчики экспортируют чистые функции проверки, которые читает `BootConfigReporter` (`src/alerts/boot-config-reporter.ts`); предупреждения в логе остаются как есть.

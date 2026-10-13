@@ -20,14 +20,12 @@ const logger = new Logger('RedisConfig');
  * boot never fails on it. Neither value is ever logged.
  */
 export function getSessionPersistenceConfig(): SessionPersistenceConfig | null {
-  const redisUrl = (process.env[REDIS_URL_ENV_VAR] || '').trim();
-  const rawKey = (process.env[SESSION_ENCRYPTION_KEY_ENV_VAR] || '').trim();
+  const { redisUrl, encryptionKey } = readPersistenceSettings();
 
   if (!redisUrl) {
     logger.warn(`${REDIS_URL_ENV_VAR} is not set: sessions are kept in memory only`);
     return null;
   }
-  const encryptionKey = Buffer.from(rawKey, KEY_ENCODING);
   if (encryptionKey.length !== SECRET_KEY_BYTES) {
     logger.warn(
       `${SESSION_ENCRYPTION_KEY_ENV_VAR} must be ${SECRET_KEY_BYTES} bytes in base64: ` +
@@ -37,4 +35,16 @@ export function getSessionPersistenceConfig(): SessionPersistenceConfig | null {
   }
 
   return { redisUrl, encryptionKey };
+}
+
+/** True when sessions survive a restart; reads the environment without logging. */
+export function isSessionPersistenceConfigured(): boolean {
+  const { redisUrl, encryptionKey } = readPersistenceSettings();
+  return Boolean(redisUrl) && encryptionKey.length === SECRET_KEY_BYTES;
+}
+
+function readPersistenceSettings(): SessionPersistenceConfig {
+  const redisUrl = (process.env[REDIS_URL_ENV_VAR] || '').trim();
+  const rawKey = (process.env[SESSION_ENCRYPTION_KEY_ENV_VAR] || '').trim();
+  return { redisUrl, encryptionKey: Buffer.from(rawKey, KEY_ENCODING) };
 }

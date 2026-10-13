@@ -1,3 +1,7 @@
+[1.5.1] 13.10.2026
+
+- Alerts to TechAdminServer (ALERTS_URL, ALERTS_API_KEY, ALERTS_SERVICE_NAME): info on every successful login with the Telegram id and username only, warnings and errors on Telegram 5xx and flood waits, Redis outages, unsaved sessions, digest failures and gaps, process crashes, a failed start and an incomplete configuration; sent in the background with a bounded queue, a 10-minute dedup window and secret stripping, disabled when the variables are not set
+
 [1.5.0] 30.09.2026
 
 - The summary request may take up to 30 minutes and is not resent after a timeout; translation batches keep a 3-minute limit

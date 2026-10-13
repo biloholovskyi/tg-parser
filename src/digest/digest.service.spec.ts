@@ -6,7 +6,9 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
+import type { AlertService } from '../alerts/alert.service';
 import type { DigestConfig } from '../config/digest.config';
+import { BotError } from './bot-notifier';
 import type { BotNotifier } from './bot-notifier';
 import { DIGEST_MAX_POSTS, DIGEST_WINDOW_HOURS } from './constants';
 import {
@@ -29,12 +31,17 @@ jest.mock('./post-collector', () => ({ PostCollector: class {} }));
 
 const LOGGER_LEVELS = ['log', 'error', 'warn', 'debug', 'verbose', 'fatal'] as const;
 const INPUT_FAKE_TOKEN = 'fake-bot-token';
+const INPUT_FAKE_GROK_KEY = 'fake-grok-key';
+/** Shaped like a GramJS StringSession; built in code so no fixture holds a session-like literal. */
+const INPUT_FAKE_SESSION = '1' + 'A'.repeat(250);
 const INPUT_CHANNELS = ['fake_alpha', 'fake_beta'];
 const SECRET_ORIGINAL = 'SECRET-ORIGINAL-POST-BODY';
 const SECRET_TRANSLATED = 'SECRET-TRANSLATED-POST-BODY';
 const BASE_DATE_MS = Date.UTC(2026, 0, 1);
 const FLUSH_ROUNDS = 20;
 const EXTRA_POSTS = 5;
+/** Text posts in the default fixture, listed one block each by the summary fallback. */
+const EXPECTED_FALLBACK_TOPICS = 2;
 /** Two progress lines plus the outcome line. */
 const EXPECTED_SUCCESS_LOG_LINES = 3;
 /** Fake duration of a run in the exact outcome-line test. */
@@ -106,7 +113,7 @@ function buildConfig(isConfigured = true): DigestConfig {
     channels: INPUT_CHANNELS,
     cron: '0 23 * * *',
     timezone: 'Europe/Kyiv',
-    grokApiKey: 'fake-grok-key',
+    grokApiKey: INPUT_FAKE_GROK_KEY,
     grokModel: 'fake-model',
     grokReasoningEffort: 'low',
     botToken: INPUT_FAKE_TOKEN,
@@ -120,6 +127,7 @@ describe('DigestService', () => {
   let mockTranslate: jest.Mock<Promise<TranslationResult>, [DigestPost[]]>;
   let mockSummarize: jest.Mock<Promise<SummaryResult>, [TranslatedPost[]]>;
   let mockSend: jest.Mock<Promise<void>, [readonly string[]]>;
+  let mockAlerts: { info: jest.Mock; warning: jest.Mock; error: jest.Mock };
   let loggerSpies: Record<(typeof LOGGER_LEVELS)[number], jest.SpyInstance>;
   let inputPosts: DigestPost[];
 
@@ -130,6 +138,7 @@ describe('DigestService', () => {
       { translate: mockTranslate } as unknown as TranslationService,
       { summarize: mockSummarize } as unknown as SummaryService,
       { send: mockSend } as unknown as BotNotifier,
+      mockAlerts as unknown as AlertService,
     );
   }
 
@@ -156,6 +165,7 @@ describe('DigestService', () => {
     mockTranslate = jest.fn(async (posts: DigestPost[]) => translate(posts));
     mockSummarize = jest.fn(async (posts: TranslatedPost[]) => summarize(posts));
     mockSend = jest.fn<Promise<void>, [readonly string[]]>(async () => undefined);
+    mockAlerts = { info: jest.fn(), warning: jest.fn(), error: jest.fn() };
     loggerSpies = Object.fromEntries(
       LOGGER_LEVELS.map((level) => [
         level,
@@ -565,6 +575,297 @@ describe('DigestService', () => {
       expect(actualText).not.toContain(SECRET_ORIGINAL);
       expect(actualText).not.toContain(SECRET_TRANSLATED);
       expect(actualText).not.toContain(INPUT_FAKE_TOKEN);
+    });
+  });
+
+  describe('alerts', () => {
+    const GAPS_MESSAGE = 'Digest delivered with gaps';
+    const FAILED_MESSAGE = 'Digest run failed';
+    const NOTICE_MESSAGE = 'Digest failure notice not delivered';
+    const SKIPPED_MESSAGE = 'Scheduled digest skipped: a run is already in progress';
+
+    function alertedText(): string {
+      return [mockAlerts.info, mockAlerts.warning, mockAlerts.error]
+        .flatMap((mock) => mock.mock.calls)
+        .map((call: unknown[]) => JSON.stringify(call))
+        .join('\n');
+    }
+
+    it('sends one error with the 401 status and the session reason, without the session', async () => {
+      // Arrange
+      mockCollect.mockRejectedValueOnce(new UnauthorizedException(`fake ${INPUT_FAKE_SESSION}`));
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockAlerts.error).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.error).toHaveBeenCalledWith(FAILED_MESSAGE, {
+        trigger: 'scheduled',
+        cause: String(HttpStatus.UNAUTHORIZED),
+        reason: expect.stringContaining(SESSION_REASON),
+      });
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+      expect(alertedText()).not.toContain(INPUT_FAKE_SESSION);
+    });
+
+    it('describes a non-HTTP failure in the cause as its name and message', async () => {
+      // Arrange
+      mockTranslate.mockRejectedValueOnce(new TypeError('fake broken answer'));
+      const service = createService();
+
+      // Act
+      service.start();
+      await flushBackground();
+
+      // Assert
+      expect(mockAlerts.error).toHaveBeenCalledWith(FAILED_MESSAGE, {
+        trigger: 'manual',
+        cause: 'TypeError: fake broken answer',
+        reason: GENERIC_REASON,
+      });
+    });
+
+    it('sends a second error when the failure notice itself fails with a BotError', async () => {
+      // Arrange
+      mockCollect.mockRejectedValueOnce(new UnauthorizedException());
+      mockSend.mockRejectedValueOnce(new BotError('HTTP 502 (fake bad gateway)', true));
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockAlerts.error).toHaveBeenCalledTimes(2);
+      expect(mockAlerts.error.mock.calls[0][0]).toBe(FAILED_MESSAGE);
+      expect(mockAlerts.error).toHaveBeenLastCalledWith(NOTICE_MESSAGE, {
+        trigger: 'scheduled',
+        cause: 'BotError: HTTP 502 (fake bad gateway)',
+      });
+    });
+
+    it.each([
+      ['a string', 'fake string rejection', 'fake string rejection'],
+      ['a plain object', { detail: 'fake-hidden-payload' }, 'unknown error'],
+      ['undefined', undefined, 'unknown error'],
+    ])(
+      'describes a failure notice rejected with %s through describeError',
+      async (_label, inputRejection, expectedCause) => {
+        // Arrange
+        mockCollect.mockRejectedValueOnce(new UnauthorizedException());
+        mockSend.mockRejectedValueOnce(inputRejection);
+        const service = createService();
+
+        // Act
+        await service.runScheduled();
+
+        // Assert
+        expect(mockAlerts.error).toHaveBeenLastCalledWith(NOTICE_MESSAGE, {
+          trigger: 'scheduled',
+          cause: expectedCause,
+        });
+        expect(alertedText()).not.toContain('fake-hidden-payload');
+      },
+    );
+
+    it.each([
+      ['a string', 'fake string failure', 'fake string failure'],
+      ['a plain object', { detail: 'fake-hidden-payload' }, 'unknown error'],
+    ])(
+      'describes a run rejected with %s through describeError',
+      async (_label, inputRejection, expectedCause) => {
+        // Arrange
+        mockCollect.mockRejectedValueOnce(inputRejection);
+        const service = createService();
+
+        // Act
+        await service.runScheduled();
+
+        // Assert
+        expect(mockAlerts.error).toHaveBeenCalledWith(FAILED_MESSAGE, {
+          trigger: 'scheduled',
+          cause: expectedCause,
+          reason: GENERIC_REASON,
+        });
+        expect(alertedText()).not.toContain('fake-hidden-payload');
+      },
+    );
+
+    it('reports a bot-refused digest as one run failure and no gap warning', async () => {
+      // Arrange
+      mockSend.mockRejectedValueOnce(new BotError('HTTP 400 (fake parse error)', false));
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockAlerts.error).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.error).toHaveBeenCalledWith(FAILED_MESSAGE, {
+        trigger: 'scheduled',
+        cause: 'BotError: HTTP 400 (fake parse error)',
+        reason: GENERIC_REASON,
+      });
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+    });
+
+    it('sends one warning with every counter for a summary fallback and an unavailable channel', async () => {
+      // Arrange
+      mockCollect.mockResolvedValueOnce({
+        ...buildCollected(inputPosts),
+        unavailableChannels: ['fake_beta'],
+      });
+      mockSummarize.mockRejectedValueOnce(new Error('fake grok failure'));
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.warning).toHaveBeenCalledWith(GAPS_MESSAGE, {
+        trigger: 'scheduled',
+        isSummaryFallback: true,
+        unavailableChannels: ['fake_beta'],
+        truncatedChannels: [],
+        untranslatedCount: 0,
+        skippedPostCount: 0,
+        fallbackTopicCount: EXPECTED_FALLBACK_TOPICS,
+      });
+      expect(mockAlerts.error).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'a truncated channel',
+        { truncatedChannels: ['fake_alpha'] },
+        { truncatedChannels: ['fake_alpha'] },
+      ],
+      ['an untranslated post', { untranslatedCount: 1 }, { untranslatedCount: 1 }],
+    ])('sends one gap warning for %s', async (_label, inputGap, expectedDetails) => {
+      // Arrange
+      const { truncatedChannels, untranslatedCount } = {
+        truncatedChannels: [] as string[],
+        untranslatedCount: 0,
+        ...inputGap,
+      };
+      mockCollect.mockResolvedValueOnce({ ...buildCollected(inputPosts), truncatedChannels });
+      mockTranslate.mockImplementationOnce(async (posts: DigestPost[]) => ({
+        ...translate(posts),
+        untranslatedCount,
+      }));
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.warning).toHaveBeenCalledWith(
+        GAPS_MESSAGE,
+        expect.objectContaining({ isSummaryFallback: false, ...expectedDetails }),
+      );
+    });
+
+    it('sends one gap warning with the skipped count past DIGEST_MAX_POSTS', async () => {
+      // Arrange
+      inputPosts = Array.from({ length: DIGEST_MAX_POSTS + EXTRA_POSTS }, (_, index) =>
+        buildPost(index + 1),
+      );
+      const service = createService();
+
+      // Act
+      service.start();
+      await flushBackground();
+
+      // Assert
+      expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.warning).toHaveBeenCalledWith(
+        GAPS_MESSAGE,
+        expect.objectContaining({ trigger: 'manual', skippedPostCount: EXTRA_POSTS }),
+      );
+    });
+
+    it('sends no alert for a clean run', async () => {
+      // Arrange
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.info).not.toHaveBeenCalled();
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+      expect(mockAlerts.error).not.toHaveBeenCalled();
+    });
+
+    it('does not treat fallback topics alone as a gap', async () => {
+      // Arrange
+      mockSummarize.mockImplementationOnce(async (posts: TranslatedPost[]) => ({
+        ...summarize(posts),
+        fallbackTopicCount: 1,
+      }));
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+      expect(mockAlerts.error).not.toHaveBeenCalled();
+    });
+
+    it('sends one warning when a scheduled run is skipped while another run is in progress', async () => {
+      // Arrange
+      const gate = deferred<CollectedPosts>();
+      mockCollect.mockReturnValueOnce(gate.promise);
+      const service = createService();
+      service.start();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.warning).toHaveBeenCalledWith(SKIPPED_MESSAGE);
+
+      gate.resolve(buildCollected(inputPosts));
+      await flushBackground();
+      expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+    });
+
+    it('never puts the bot token, the Grok key or a session string into any alert', async () => {
+      // Arrange
+      const service = createService();
+      mockCollect.mockResolvedValueOnce({
+        ...buildCollected(inputPosts),
+        unavailableChannels: ['fake_beta'],
+      });
+      mockSummarize.mockRejectedValueOnce(new Error(`fake grok failure ${INPUT_FAKE_GROK_KEY}`));
+      await service.runScheduled();
+      mockCollect.mockRejectedValueOnce(new UnauthorizedException(`fake ${INPUT_FAKE_SESSION}`));
+      mockSend.mockRejectedValueOnce(new BotError('HTTP 401 (fake unauthorized)', false));
+      await service.runScheduled();
+      const gate = deferred<CollectedPosts>();
+      mockCollect.mockReturnValueOnce(gate.promise);
+      service.start();
+
+      // Act
+      await service.runScheduled();
+      gate.resolve(buildCollected(inputPosts));
+      await flushBackground();
+
+      // Assert
+      expect(mockAlerts.warning).toHaveBeenCalled();
+      expect(mockAlerts.error).toHaveBeenCalled();
+      const actualText = alertedText();
+      expect(actualText).not.toContain(INPUT_FAKE_TOKEN);
+      expect(actualText).not.toContain(INPUT_FAKE_GROK_KEY);
+      expect(actualText).not.toContain(INPUT_FAKE_SESSION);
+      expect(actualText).not.toContain(SECRET_ORIGINAL);
+      expect(actualText).not.toContain(SECRET_TRANSLATED);
     });
   });
 });

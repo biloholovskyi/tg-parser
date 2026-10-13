@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
+import type { AlertGate } from '../../alerts/interfaces/alert.interface';
 import {
   closeApplication,
   describeError,
@@ -402,5 +403,233 @@ describe('resetShutdownState', () => {
 
     expect(mockApp.close).toHaveBeenCalledTimes(2);
     expect(mockExit).toHaveBeenLastCalledWith(EXIT_CODE_FAILURE);
+  });
+});
+
+describe('process handlers with an alert sink', () => {
+  let mockApp: MockApp;
+  let mockExit: jest.SpyInstance;
+  let mockAlerts: {
+    info: jest.Mock;
+    warning: jest.Mock;
+    error: jest.Mock;
+    beginShutdown: jest.Mock;
+  };
+  let savedListeners: Map<string, ProcessListener[]>;
+
+  function asAlertGate(): AlertGate {
+    return mockAlerts as unknown as AlertGate;
+  }
+
+  beforeEach(() => {
+    resetShutdownState();
+    savedListeners = detachManagedListeners();
+    mockApp = createMockApp();
+    mockAlerts = {
+      info: jest.fn(),
+      warning: jest.fn(),
+      error: jest.fn(),
+      beginShutdown: jest.fn(),
+    };
+    mockExit = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    restoreManagedListeners(savedListeners);
+    jest.restoreAllMocks();
+    resetShutdownState();
+  });
+
+  it('sends one error for an unhandled rejection and keeps the process running', async () => {
+    // Arrange
+    registerProcessHandlers(asNestApp(mockApp), asAlertGate());
+
+    // Act
+    process.emit(REJECTION_EVENT, new Error(INPUT_ERROR_MESSAGE), Promise.resolve());
+    await flushPendingPromises();
+
+    // Assert
+    expect(mockAlerts.error).toHaveBeenCalledTimes(1);
+    expect(mockAlerts.error).toHaveBeenCalledWith('Unhandled promise rejection', {
+      error: `Error: ${INPUT_ERROR_MESSAGE}`,
+    });
+    expect(mockApp.close).not.toHaveBeenCalled();
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it('describes a non-error rejection without leaking its payload', async () => {
+    // Arrange
+    registerProcessHandlers(asNestApp(mockApp), asAlertGate());
+
+    // Act
+    process.emit(REJECTION_EVENT, { detail: INPUT_HIDDEN_PAYLOAD }, Promise.resolve());
+    await flushPendingPromises();
+
+    // Assert
+    expect(mockAlerts.error).toHaveBeenCalledWith('Unhandled promise rejection', {
+      error: DESCRIBE_ERROR_FALLBACK,
+    });
+    expect(JSON.stringify(mockAlerts.error.mock.calls)).not.toContain(INPUT_HIDDEN_PAYLOAD);
+  });
+
+  it('sends one error for an uncaught exception before closing, then exits with failure', async () => {
+    // Arrange
+    registerProcessHandlers(asNestApp(mockApp), asAlertGate());
+
+    // Act
+    process.emit(EXCEPTION_EVENT, new TypeError(INPUT_ERROR_MESSAGE));
+    await flushPendingPromises();
+
+    // Assert
+    expect(mockAlerts.error).toHaveBeenCalledTimes(1);
+    expect(mockAlerts.error).toHaveBeenCalledWith('Uncaught exception, shutting down', {
+      error: `TypeError: ${INPUT_ERROR_MESSAGE}`,
+    });
+    expect(mockAlerts.error.mock.invocationCallOrder[0]).toBeLessThan(
+      mockApp.close.mock.invocationCallOrder[0],
+    );
+    expect(mockExit).toHaveBeenCalledWith(EXIT_CODE_FAILURE);
+    expect(mockAlerts.warning).not.toHaveBeenCalled();
+  });
+
+  it('queues the uncaught exception alert before it begins the alert shutdown', async () => {
+    // Arrange
+    registerProcessHandlers(asNestApp(mockApp), asAlertGate());
+
+    // Act
+    process.emit(EXCEPTION_EVENT, new Error(INPUT_ERROR_MESSAGE));
+    await flushPendingPromises();
+
+    // Assert
+    expect(mockAlerts.beginShutdown).toHaveBeenCalledTimes(1);
+    expect(mockAlerts.error.mock.invocationCallOrder[0]).toBeLessThan(
+      mockAlerts.beginShutdown.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('logs but sends no alert when closing fails after an uncaught exception', async () => {
+    // Arrange
+    mockApp.close.mockRejectedValue(new Error(INPUT_ERROR_MESSAGE));
+    registerProcessHandlers(asNestApp(mockApp), asAlertGate());
+
+    // Act
+    process.emit(EXCEPTION_EVENT, new Error(INPUT_ERROR_MESSAGE));
+    await flushPendingPromises();
+
+    // Assert
+    expect(mockAlerts.error).toHaveBeenCalledTimes(1);
+    expect(mockAlerts.warning).not.toHaveBeenCalled();
+    expect(Logger.prototype.error).toHaveBeenCalledWith(
+      `Error during shutdown: Error: ${INPUT_ERROR_MESSAGE}`,
+    );
+    expect(mockExit).toHaveBeenCalledWith(EXIT_CODE_FAILURE);
+  });
+
+  it('sends no alert when closing fails after a shutdown signal', async () => {
+    // Arrange
+    const [inputSignal] = SHUTDOWN_SIGNALS;
+    mockApp.close.mockRejectedValue(new Error(INPUT_ERROR_MESSAGE));
+    registerProcessHandlers(asNestApp(mockApp), asAlertGate());
+
+    // Act
+    process.emit(inputSignal, inputSignal);
+    await flushPendingPromises();
+
+    // Assert
+    expect(mockAlerts.warning).not.toHaveBeenCalled();
+    expect(mockAlerts.error).not.toHaveBeenCalled();
+    expect(mockAlerts.beginShutdown).toHaveBeenCalledTimes(1);
+    expect(mockExit).toHaveBeenCalledWith(EXIT_CODE_SUCCESS);
+  });
+
+  it('sends no alert for a clean shutdown on a signal', async () => {
+    // Arrange
+    const [inputSignal] = SHUTDOWN_SIGNALS;
+    registerProcessHandlers(asNestApp(mockApp), asAlertGate());
+
+    // Act
+    process.emit(inputSignal, inputSignal);
+    await flushPendingPromises();
+
+    // Assert
+    expect(mockAlerts.info).not.toHaveBeenCalled();
+    expect(mockAlerts.warning).not.toHaveBeenCalled();
+    expect(mockAlerts.error).not.toHaveBeenCalled();
+    expect(mockExit).toHaveBeenCalledWith(EXIT_CODE_SUCCESS);
+  });
+
+  it('logs the timeout and sends no alert when a direct close never settles', async () => {
+    // Arrange
+    jest.useFakeTimers();
+    mockApp.close.mockReturnValue(new Promise<void>(() => undefined));
+
+    // Act
+    const actualShutdown = closeApplication(asNestApp(mockApp), EXIT_CODE_FAILURE, asAlertGate());
+    await jest.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS + SHUTDOWN_TIMEOUT_OVERSHOOT_MS);
+    await actualShutdown;
+    jest.useRealTimers();
+
+    // Assert
+    expect(mockAlerts.warning).not.toHaveBeenCalled();
+    expect(mockAlerts.error).not.toHaveBeenCalled();
+    expect(Logger.prototype.error).toHaveBeenCalledWith(
+      expect.stringContaining(String(SHUTDOWN_TIMEOUT_MS)),
+    );
+    expect(mockExit).toHaveBeenCalledWith(EXIT_CODE_FAILURE);
+  });
+
+  it('begins the alert shutdown before it closes the application', async () => {
+    // Act
+    await closeApplication(asNestApp(mockApp), EXIT_CODE_SUCCESS, asAlertGate());
+
+    // Assert
+    expect(mockAlerts.beginShutdown).toHaveBeenCalledTimes(1);
+    expect(mockAlerts.beginShutdown.mock.invocationCallOrder[0]).toBeLessThan(
+      mockApp.close.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('begins the alert shutdown once when a second close arrives', async () => {
+    // Act
+    await closeApplication(asNestApp(mockApp), EXIT_CODE_SUCCESS, asAlertGate());
+    await closeApplication(asNestApp(mockApp), EXIT_CODE_FAILURE, asAlertGate());
+
+    // Assert
+    expect(mockAlerts.beginShutdown).toHaveBeenCalledTimes(1);
+    expect(mockApp.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('begins the alert shutdown once when a signal and an uncaught exception race', async () => {
+    // Arrange
+    const [inputSignal] = SHUTDOWN_SIGNALS;
+    registerProcessHandlers(asNestApp(mockApp), asAlertGate());
+
+    // Act
+    process.emit(inputSignal, inputSignal);
+    process.emit(EXCEPTION_EVENT, new Error(INPUT_ERROR_MESSAGE));
+    await flushPendingPromises();
+
+    // Assert
+    expect(mockAlerts.beginShutdown).toHaveBeenCalledTimes(1);
+    expect(mockApp.close).toHaveBeenCalledTimes(1);
+    expect(mockExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps handling every event without an alert sink', async () => {
+    // Arrange
+    mockApp.close.mockRejectedValue(new Error(INPUT_ERROR_MESSAGE));
+    registerProcessHandlers(asNestApp(mockApp));
+
+    // Act
+    process.emit(REJECTION_EVENT, new Error(INPUT_ERROR_MESSAGE), Promise.resolve());
+    process.emit(EXCEPTION_EVENT, new Error(INPUT_ERROR_MESSAGE));
+    await flushPendingPromises();
+
+    // Assert
+    expect(mockApp.close).toHaveBeenCalledTimes(1);
+    expect(mockExit).toHaveBeenCalledWith(EXIT_CODE_FAILURE);
+    expect(mockAlerts.error).not.toHaveBeenCalled();
   });
 });

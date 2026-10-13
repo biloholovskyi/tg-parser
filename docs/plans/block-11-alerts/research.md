@@ -4,7 +4,7 @@
 
 ## Внешний сервис (TechAdminServer)
 
-- Контракт: `swagger.json` в корне репозитория, версия API 0.2.0.
+- Контракт: `swagger.json`, переданный пользователем (версия API 0.2.0); в репозиторий не входит, нужные поля перенесены сюда.
 - Базовый адрес: `https://tech-adming-back-production.up.railway.app/`.
 - Приём алерта: `POST /alerts`, заголовок `X-API-Key`, ответ 202 `AlertAcceptedResponse` (`id`, `createdAt`, `deliveryStatus`), 401 при неверном ключе.
 - Тело `CreateAlertDto`:

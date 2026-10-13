@@ -30,3 +30,9 @@ export interface AlertSink {
   warning(message: string, details?: AlertDetails): void;
   error(message: string, details?: AlertDetails): void;
 }
+
+/** An alert sink the process shutdown path can close before the application stops. */
+export interface AlertGate extends AlertSink {
+  /** Stops accepting new alerts; alerts already queued are still sent. */
+  beginShutdown(): void;
+}
