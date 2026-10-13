@@ -1,6 +1,6 @@
 # tg-parser
 
-NestJS 10 service that wraps GramJS (a Telegram MTProto client) to parse public and private Telegram channels through a personal user account, not a bot. REST API, TypeScript 5 on Node 20+. No database; issued sessions are persisted, encrypted, in Redis. A daily digest of configured channels is translated and summarized through Grok and sent to a Telegram bot.
+NestJS 10 service that wraps GramJS (a Telegram MTProto client) to parse public and private Telegram channels through a personal user account, not a bot. REST API, TypeScript 5 on Node 20+. No database; issued sessions are persisted, encrypted, in Redis. A daily digest of configured channels is translated and summarized through Grok and sent to a Telegram bot. Critical failures and every successful login are reported to the external alert service TechAdminServer (`POST /alerts`; the request contract is summarized in `docs/plans/block-11-alerts/research.md`).
 
 Session model: issued sessions are stored in Redis, encrypted with AES-256-GCM and keyed by their SHA-256, decided in [adr-session-redis.md](docs/plans/block-10-daily-digest/adr-session-redis.md). A session survives a restart or deploy; without `REDIS_URL` or `SESSION_ENCRYPTION_KEY` the service falls back to process memory only. Pending logins always live in memory. The service itself writes nothing to disk; Redis keeps its encrypted records on its own volume. Any other persistence is a new user decision, not a code change.
 
@@ -24,7 +24,7 @@ Plugin skills never override a project hard rule. Planning, committing, and test
 
 - No automatic commits: never run `git commit` on your own — commit ONLY on an explicit user request. This applies to dispatched subagents too. See @.claude/rules/git-conventions.md.
 - Every feature and bugfix ships with tests in the same change. See @.claude/rules/testing.md.
-- Secrets never reach a log, a test fixture, a report, or a memory file: no `sessionString`, `TELEGRAM_API_HASH`, phone number, SMS code, or 2FA password. See @.claude/rules/telegram.md.
+- Secrets never reach a log, an outbound alert, a test fixture, a report, or a memory file: no `sessionString`, `TELEGRAM_API_HASH`, phone number, SMS code, or 2FA password. See @.claude/rules/telegram.md.
 - GramJS stays inside `src/telegram/`. No other module imports the `telegram` package or constructs a `TelegramClient`.
 - The REST surface is privileged: every endpoint except the health probe requires caller authentication and a rate limit, and no credential ever travels in a URL. See @.claude/rules/api-security.md.
 - Every resource opened at runtime has a ceiling and a release path: bounded caches, eviction that disconnects, cleared timers, explicit GramJS options, no synchronous filesystem access on a request path. A leaked connection is a recurring bill. See @.claude/rules/runtime-resources.md.
@@ -38,6 +38,7 @@ Plugin skills never override a project hard rule. Planning, committing, and test
 ```
 TelegramController (REST) → TelegramService (facade) → AuthService | ChannelService → SessionStore → SessionRepository (Redis) | Telegram MTProto API
 DigestController | DigestScheduler → DigestService → PostCollector (TelegramService) → TranslationService | SummaryService (GrokClient) → BotNotifier (Bot API)
+Any service → AlertService (global, queued, deduplicated) → TechAdminServer POST /alerts
 ```
 
 - `GET /telegram/health` — liveness probe and the Railway health check target
@@ -83,6 +84,10 @@ Key source files:
 - [src/digest/summary.service.ts](src/digest/summary.service.ts) — topics with guaranteed coverage of every post
 - [src/digest/bot-notifier.ts](src/digest/bot-notifier.ts) — Bot API `sendMessage`, sequential, honors `retry_after`
 - [src/digest/utils/digest-formatter.ts](src/digest/utils/digest-formatter.ts) — Telegram HTML rendering and splitting at `BOT_MESSAGE_MAX_CHARS`
+- [src/alerts/alert.service.ts](src/alerts/alert.service.ts) — `info` / `warning` / `error` alerts: never throws, bounded queue and concurrency, dedup window, drained on shutdown
+- [src/alerts/alert-sanitizer.ts](src/alerts/alert-sanitizer.ts) — strips secret keys and secret-looking values from every alert
+- [src/alerts/alert-sender.ts](src/alerts/alert-sender.ts) — one `POST /alerts` with `X-API-Key`, timeout, one retry, redirects refused
+- [src/config/alerts.config.ts](src/config/alerts.config.ts) — loads `ALERTS_URL`, `ALERTS_API_KEY`, `ALERTS_SERVICE_NAME`
 
 ## Quick Commands
 
@@ -188,10 +193,13 @@ Railway via [railway.toml](railway.toml): RAILPACK builder, `npm run start:prod`
 | `GROK_REASONING_EFFORT` | `low` (default), `medium`, `high`, `xhigh`, or `off` to omit the parameter for non-reasoning models; an unknown value falls back to `low` with a warning |
 | `TELEGRAM_BOT_TOKEN` | Token of the bot that delivers the digest |
 | `TELEGRAM_BOT_CHAT_ID` | Chat the bot sends the digest to |
+| `ALERTS_URL` | Base address of the alert service (TechAdminServer); unset or invalid disables alerts |
+| `ALERTS_API_KEY` | Key sent in the `X-API-Key` header of `POST /alerts`; unset disables alerts |
+| `ALERTS_SERVICE_NAME` | Name the alerts are reported under, default `tg-parser` |
 
-The digest is enabled only when `DIGEST_CHANNELS`, `GROK_API_KEY`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_CHAT_ID` are all set; otherwise boot logs one warning naming the missing variables. Redis setup on Railway: [docs/deployment/railway-redis.md](docs/deployment/railway-redis.md).
+The digest is enabled only when `DIGEST_CHANNELS`, `GROK_API_KEY`, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_CHAT_ID` are all set; otherwise boot logs one warning naming the missing variables. Redis setup on Railway: [docs/deployment/railway-redis.md](docs/deployment/railway-redis.md). Alerts are enabled only when `ALERTS_URL` and `ALERTS_API_KEY` are both set; setup: [docs/deployment/railway-alerts.md](docs/deployment/railway-alerts.md).
 
-Credentials are read only through the loaders in `src/config/` (`telegram.config.ts`, `redis.config.ts`, `digest.config.ts`). Boot does not fail when they are missing — the health endpoint stays up and the failure surfaces on first real use.
+Credentials are read only through the loaders in `src/config/` (`telegram.config.ts`, `redis.config.ts`, `digest.config.ts`, `alerts.config.ts`). Boot does not fail when they are missing — the health endpoint stays up and the failure surfaces on first real use.
 
 ## Guards
 

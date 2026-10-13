@@ -10,7 +10,11 @@ export const ALERTS_SERVICE_NAME_DEFAULT = 'tg-parser';
 /** The alert service caps `serviceName` at this length (`CreateAlertDto`). */
 export const ALERT_SERVICE_NAME_MAX_CHARS = 100;
 
-const ALLOWED_PROTOCOLS: readonly string[] = ['http:', 'https:'];
+const SECURE_PROTOCOL = 'https:';
+const PLAIN_PROTOCOL = 'http:';
+/** Hosts plain http is allowed for: the key never leaves the machine or Railway's private network. */
+const PLAIN_HTTP_HOSTS: readonly string[] = ['localhost', '127.0.0.1', '[::1]'];
+const PRIVATE_NETWORK_SUFFIX = '.railway.internal';
 const TRAILING_SLASHES = /\/+$/;
 
 export interface AlertsConfig {
@@ -45,17 +49,30 @@ export function getAlertsConfig(): AlertsConfig {
   return { url, apiKey, serviceName, isEnabled: missing.length === 0 };
 }
 
-/** An absolute http(s) address without trailing slashes, or an empty string when unusable. */
+/**
+ * An https address without credentials, query or fragment and without trailing slashes; plain
+ * http only for a local or Railway-internal host. Anything else is an empty string: unusable.
+ */
 function parseUrl(rawUrl: string): string {
   if (!rawUrl) {
     return '';
   }
   try {
     const parsed = new URL(rawUrl);
-    return ALLOWED_PROTOCOLS.includes(parsed.protocol) ? rawUrl.replace(TRAILING_SLASHES, '') : '';
+    const hasExtras = Boolean(parsed.username || parsed.password || parsed.search || parsed.hash);
+    return !hasExtras && isAllowedTransport(parsed) ? rawUrl.replace(TRAILING_SLASHES, '') : '';
   } catch {
     return '';
   }
+}
+
+function isAllowedTransport(url: URL): boolean {
+  if (url.protocol === SECURE_PROTOCOL) {
+    return true;
+  }
+  const isPrivateHost =
+    PLAIN_HTTP_HOSTS.includes(url.hostname) || url.hostname.endsWith(PRIVATE_NETWORK_SUFFIX);
+  return url.protocol === PLAIN_PROTOCOL && isPrivateHost;
 }
 
 function readEnv(name: string): string {

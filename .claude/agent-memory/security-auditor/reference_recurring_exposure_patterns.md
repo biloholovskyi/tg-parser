@@ -30,6 +30,12 @@ than by re-deriving them from source each time.
 - Deployment docs for Railway plugins drift toward the public proxy URL (`REDIS_PUBLIC_URL`) for admin
   tasks; check that each doc tells the operator to remove the TCP proxy.
 
+- Outbound HTTP with a custom auth header (`X-API-Key`): Node's global fetch keeps custom headers and the
+  POST body on a cross-origin 307 (only `Authorization` is stripped). Check every `fetch` that carries a
+  key in a non-Authorization header for `redirect: 'error'`. Verified 2026-10-13 on Node 24.
+- Error texts verified safe for alerts/logs: ioredis constructor on a bad URL throws `Invalid URL` /
+  `URI malformed` without the URL; Redis `error` events are reduced to `code ?? name` in `redis-client.ts`.
+
 Framework behaviour that decides whether a control holds (verified while auditing, not obvious from
 project source):
 

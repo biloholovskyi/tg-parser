@@ -2501,16 +2501,42 @@ describe('TelegramService', () => {
       // Assert
       await expect(actualResult).rejects.toBeInstanceOf(ServiceUnavailableException);
       expect(alerts.error).toHaveBeenCalledTimes(1);
-      expect(alerts.error).toHaveBeenCalledWith(
-        `Posts: @${inputChannel} failed: ${HttpStatus.SERVICE_UNAVAILABLE}`,
-        {
-          operation: `Posts: @${inputChannel}`,
-          status: HttpStatus.SERVICE_UNAVAILABLE,
-          error: 'Error: fake ECONNRESET',
-        },
-      );
+      expect(alerts.error).toHaveBeenCalledWith(`Posts failed: ${HttpStatus.SERVICE_UNAVAILABLE}`, {
+        channel: inputChannel,
+        operation: 'Posts',
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        error: 'Error: fake ECONNRESET',
+      });
       expect(alerts.warning).not.toHaveBeenCalled();
       expect(JSON.stringify(alerts.error.mock.calls)).not.toContain(mockFakeSessionString);
+    });
+
+    it('names two failing channels with the same alert message and each channel in the details', async () => {
+      // Arrange
+      const inputOtherChannel = 'fake_other_channel';
+      const mockErrorLog = jest.spyOn(Logger.prototype, 'error');
+      mockClient.getMessages.mockRejectedValue(new Error('fake ECONNRESET'));
+
+      // Act
+      const actualFirst = service.getChannelPosts(inputChannel, mockFakeSessionString);
+      await expect(actualFirst).rejects.toBeInstanceOf(ServiceUnavailableException);
+      const actualSecond = service.getChannelPosts(inputOtherChannel, mockFakeSessionString);
+      await expect(actualSecond).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+      // Assert
+      const expectedMessage = `Posts failed: ${HttpStatus.SERVICE_UNAVAILABLE}`;
+      expect(alerts.error).toHaveBeenCalledTimes(2);
+      expect(alerts.error.mock.calls.map(([message]) => message)).toEqual([
+        expectedMessage,
+        expectedMessage,
+      ]);
+      expect(alerts.error.mock.calls.map(([, details]) => details?.channel)).toEqual([
+        inputChannel,
+        inputOtherChannel,
+      ]);
+      const actualLogText = mockErrorLog.mock.calls.flat().map(String).join(' | ');
+      expect(actualLogText).toContain(`Posts: @${inputChannel} failed`);
+      expect(actualLogText).toContain(`Posts: @${inputOtherChannel} failed`);
     });
 
     it('sends one warning alert for a posts flood wait (429)', async () => {

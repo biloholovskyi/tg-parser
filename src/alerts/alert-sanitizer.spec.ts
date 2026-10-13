@@ -19,6 +19,10 @@ const FAKE_PHONE_CODE = 'fake-code-value';
 const FAKE_SECRET = 'fake-secret-value';
 const FAKE_AUTHORIZATION = 'Bearer fake-authorization-value';
 const INPUT_BARE_ID = '1234567890';
+const FAKE_BOT_TOKEN_SHAPED = '123456789:' + 'B'.repeat(35);
+const FAKE_XAI_KEY = 'xai-' + 'a'.repeat(30);
+const FAKE_HEX_32 = 'f'.repeat(32);
+const FAKE_HEX_40 = 'e'.repeat(40);
 
 describe('redactText', () => {
   it('redacts a session string and a phone number', () => {
@@ -35,6 +39,89 @@ describe('redactText', () => {
   it('keeps bare digit ids and counters', () => {
     // Arrange
     const inputText = `channel ${INPUT_BARE_ID} has 42 posts`;
+
+    // Act
+    const actualText = redactText(inputText);
+
+    // Assert
+    expect(actualText).toBe(inputText);
+  });
+});
+
+describe('redactText value shapes', () => {
+  it('redacts a session string that follows a letter with no word boundary', () => {
+    // Act
+    const actualText = redactText(`x${FAKE_SESSION} end`);
+
+    // Assert
+    expect(actualText).toBe(`x${ALERT_REDACTED} end`);
+  });
+
+  it.each([
+    ['a bot token', `bot ${FAKE_BOT_TOKEN_SHAPED} rejected`, `bot ${ALERT_REDACTED} rejected`],
+    ['an xAI key', `key ${FAKE_XAI_KEY} rejected`, `key ${ALERT_REDACTED} rejected`],
+    [
+      'a bearer credential',
+      'Authorization: Bearer fake.xyz-token',
+      `Authorization: ${ALERT_REDACTED}`,
+    ],
+    ['a lowercase bearer credential', 'header bearer xyz', `header ${ALERT_REDACTED}`],
+    ['a 32-character hex run', `hash ${FAKE_HEX_32} used`, `hash ${ALERT_REDACTED} used`],
+    [
+      'an uppercase 32-character hex run',
+      `hash ${FAKE_HEX_32.toUpperCase()}`,
+      `hash ${ALERT_REDACTED}`,
+    ],
+  ])('redacts %s', (_label, inputText, expectedText) => {
+    // Act
+    const actualText = redactText(inputText);
+
+    // Assert
+    expect(actualText).toBe(expectedText);
+  });
+
+  it('keeps a hex run longer than 32 characters', () => {
+    // Arrange
+    const inputText = `commit ${FAKE_HEX_40}`;
+
+    // Act
+    const actualText = redactText(inputText);
+
+    // Assert
+    expect(actualText).toBe(inputText);
+  });
+
+  it.each([
+    [
+      'a user and a password',
+      'connect redis://fake-user:fake-pass@redis.example.test:6379 failed',
+      `connect redis://${ALERT_REDACTED}@redis.example.test:6379 failed`,
+    ],
+    [
+      'a password with an empty user',
+      'redis://:fake-pass@redis.example.test:6379',
+      `redis://${ALERT_REDACTED}@redis.example.test:6379`,
+    ],
+    [
+      'an https URL with credentials',
+      'https://fake-user:fake-pass@alerts.example.test/alerts',
+      `https://${ALERT_REDACTED}@alerts.example.test/alerts`,
+    ],
+  ])(
+    'replaces URL credentials with %s and keeps the scheme and host',
+    (_label, inputText, expectedText) => {
+      // Act
+      const actualText = redactText(inputText);
+
+      // Assert
+      expect(actualText).toBe(expectedText);
+      expect(actualText).not.toContain('fake-pass');
+    },
+  );
+
+  it('keeps a URL without credentials unchanged', () => {
+    // Arrange
+    const inputText = 'GET https://alerts.example.test:8443/alerts failed';
 
     // Act
     const actualText = redactText(inputText);
@@ -90,6 +177,16 @@ describe('sanitizeDetails', () => {
     'Authorization',
     'secret',
     'SECRET',
+    'auth',
+    'code',
+    'pin',
+    'pass',
+    'pwd',
+    'hash',
+    'key',
+    'url',
+    'URL',
+    'Key',
   ])('drops the forbidden key %s', (inputKey) => {
     // Arrange
     const inputDetails = { [inputKey]: 'fake-value', kept: 'yes' };
@@ -101,19 +198,30 @@ describe('sanitizeDetails', () => {
     expect(actualDetails).toEqual({ kept: 'yes' });
   });
 
-  it.each(['X-API-Key', 'accessToken', 'apiSecret', 'clientSecret', 'sessionId', 'userPhone'])(
-    'drops the key %s that contains a forbidden fragment',
-    (inputKey) => {
-      // Arrange
-      const inputDetails = { [inputKey]: 'fake-value', kept: 'yes' };
+  it.each([
+    'X-API-Key',
+    'accessToken',
+    'apiSecret',
+    'clientSecret',
+    'sessionId',
+    'userPhone',
+    'userPasswd',
+    'credentials',
+    'Set-Cookie',
+    'encryptionKey',
+    'REDIS_URL',
+    'sentryDsn',
+    'otpCode',
+  ])('drops the key %s that contains a forbidden fragment', (inputKey) => {
+    // Arrange
+    const inputDetails = { [inputKey]: 'fake-value', kept: 'yes' };
 
-      // Act
-      const actualDetails = sanitizeDetails(inputDetails);
+    // Act
+    const actualDetails = sanitizeDetails(inputDetails);
 
-      // Assert
-      expect(actualDetails).toEqual({ kept: 'yes' });
-    },
-  );
+    // Assert
+    expect(actualDetails).toEqual({ kept: 'yes' });
+  });
 
   it('keeps ordinary keys that contain no forbidden fragment', () => {
     // Arrange
@@ -132,6 +240,79 @@ describe('sanitizeDetails', () => {
 
     // Assert
     expect(actualDetails).toEqual(inputDetails);
+  });
+
+  it('keeps every details key the service reports, including ones close to an exact forbidden key', () => {
+    // Arrange
+    const inputDetails = {
+      urls: ['/telegram/me'],
+      status: 503,
+      operation: 'Posts',
+      channel: 'fake_channel',
+      trigger: 'schedule',
+      reason: 'fake reason',
+      cause: '503',
+      missing: ['GROK_API_KEY'],
+      userId: INPUT_BARE_ID,
+      username: 'fake_user',
+      has2fa: true,
+      isPersisted: false,
+      unavailableChannels: ['fake_a'],
+      truncatedChannels: ['fake_b'],
+      untranslatedCount: 1,
+      skippedPostCount: 2,
+      fallbackTopicCount: 3,
+      suppressedRepeats: 4,
+      droppedAlerts: 5,
+      cron: '0 23 * * *',
+    };
+
+    // Act
+    const actualDetails = sanitizeDetails(inputDetails);
+
+    // Assert
+    expect(actualDetails).toEqual(inputDetails);
+  });
+
+  it.each([
+    ['a Buffer', Buffer.from('fake-bytes')],
+    ['an Error', new Error('fake error with ' + FAKE_PHONE)],
+    ['a Map', new Map([['password', 'fake-value']])],
+    ['a Set', new Set(['fake-value'])],
+    [
+      'a class instance',
+      new (class FakeHolder {
+        readonly inner = 'fake-value';
+      })(),
+    ],
+  ])('replaces %s with the unsupported marker', (_label, inputValue) => {
+    // Act
+    const actualDetails = sanitizeDetails({ value: inputValue, kept: 'yes' });
+
+    // Assert
+    expect(actualDetails).toEqual({ value: '[unsupported]', kept: 'yes' });
+  });
+
+  it('replaces a non-plain object inside an array with the unsupported marker', () => {
+    // Act
+    const actualDetails = sanitizeDetails({ list: [new Error('fake'), 'a'] });
+
+    // Assert
+    expect(actualDetails).toEqual({ list: ['[unsupported]', 'a'] });
+  });
+
+  it('recurses into an object without a prototype and still drops forbidden keys', () => {
+    // Arrange
+    const inputNested = Object.assign(Object.create(null) as Record<string, unknown>, {
+      password: FAKE_PASSWORD,
+      path: '/telegram/me',
+    });
+
+    // Act
+    const actualDetails = sanitizeDetails({ request: inputNested });
+
+    // Assert
+    expect(actualDetails).toEqual({ request: { path: '/telegram/me' } });
   });
 
   it('drops forbidden keys in nested objects', () => {

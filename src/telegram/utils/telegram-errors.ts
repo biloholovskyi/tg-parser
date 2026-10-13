@@ -9,7 +9,7 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
-import type { AlertSink } from '../../alerts/interfaces/alert.interface';
+import type { AlertDetails, AlertSink } from '../../alerts/interfaces/alert.interface';
 import { TooManyRequestsException } from '../../shared/exceptions/too-many-requests.exception';
 import {
   AUTH_INPUT_ERRORS,
@@ -168,23 +168,40 @@ export function missingConfigException(): InternalServerErrorException {
 }
 
 /**
+ * How a failure is named in an alert: a constant operation, so the dedup key does not split by
+ * channel, with the variable parts in the details.
+ */
+export interface AlertContext {
+  operation: string;
+  details?: AlertDetails;
+}
+
+/**
  * Maps a failure to its HTTP exception and writes the single outcome line for the request:
  * the operation, the status and a caller-safe error description, never the request payload.
  * With `alerts`, a 5xx is reported as an error and a flood wait as a warning; failures caused by
- * the caller (400, 401, 404) are not alerts.
+ * the caller (400, 401, 404) are not alerts. `alertContext` overrides the operation the alert
+ * names, for operations whose log label carries a variable part.
  */
 export function failWith(
   logger: Logger,
   operation: string,
   error: unknown,
   alerts?: AlertSink,
+  alertContext?: AlertContext,
 ): HttpException {
   const exception = toHttpException(error);
   const status = exception.getStatus();
   const description = describeError(error);
   const line = `${operation} failed: ${status} (${description})`;
-  const alertMessage = `${operation} failed: ${status}`;
-  const alertDetails = { operation, status, error: description };
+  const alertOperation = alertContext?.operation ?? operation;
+  const alertMessage = `${alertOperation} failed: ${status}`;
+  const alertDetails = {
+    ...alertContext?.details,
+    operation: alertOperation,
+    status,
+    error: description,
+  };
   if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
     logger.error(line);
     alerts?.error(alertMessage, alertDetails);

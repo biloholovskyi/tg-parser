@@ -54,9 +54,28 @@ describe('getAlertsConfig', () => {
     expect(mockWarn).not.toHaveBeenCalled();
   });
 
-  it('accepts a plain http URL', () => {
+  it.each([
+    ['localhost', 'http://localhost:8080'],
+    ['the IPv4 loopback', 'http://127.0.0.1:8080'],
+    ['the IPv6 loopback', 'http://[::1]:8080'],
+    ['a Railway private host', 'http://tech-admin.railway.internal:8080'],
+  ])('accepts a plain http URL to %s', (_label, inputUrl) => {
     // Arrange
-    const inputUrl = 'http://alerts.example.test:8080';
+    process.env[ALERTS_URL_ENV_VAR] = inputUrl;
+    process.env[ALERTS_API_KEY_ENV_VAR] = INPUT_API_KEY;
+
+    // Act
+    const actualConfig = getAlertsConfig();
+
+    // Assert
+    expect(actualConfig.isEnabled).toBe(true);
+    expect(actualConfig.url).toBe(inputUrl);
+    expect(mockWarn).not.toHaveBeenCalled();
+  });
+
+  it('accepts an https URL with a path and a port', () => {
+    // Arrange
+    const inputUrl = 'https://alerts.example.test:8443/api';
     process.env[ALERTS_URL_ENV_VAR] = inputUrl;
     process.env[ALERTS_API_KEY_ENV_VAR] = INPUT_API_KEY;
 
@@ -126,6 +145,14 @@ describe('getAlertsConfig', () => {
     ['javascript scheme', 'javascript:alert(1)'],
     ['malformed', 'not a url'],
     ['relative path', '/alerts'],
+    ['plain http to a public host', 'http://alerts.example.test:8080'],
+    ['plain http to a look-alike private host', 'http://alerts.railway.internal.example.test'],
+    ['plain http to the bare private suffix', 'http://railway.internal'],
+    ['https with a username and password', 'https://fake-user:fake-pass@alerts.example.test'],
+    ['https with a username only', 'https://fake-user@alerts.example.test'],
+    ['https with a query', 'https://alerts.example.test/?token=fake-token'],
+    ['https with a fragment', 'https://alerts.example.test/#fake-fragment'],
+    ['localhost with credentials', 'http://fake-user:fake-pass@localhost:8080'],
   ])('is disabled when the URL is %s, never logging the value', (_label, inputUrl) => {
     // Arrange
     process.env[ALERTS_URL_ENV_VAR] = inputUrl;

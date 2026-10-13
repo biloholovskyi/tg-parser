@@ -8,8 +8,7 @@ export interface TelegramConfig {
 }
 
 export function getTelegramConfig(): TelegramConfig {
-  const apiId = parseInt(process.env.TELEGRAM_API_ID || '0', 10);
-  const apiHash = process.env.TELEGRAM_API_HASH || '';
+  const { apiId, apiHash } = readTelegramConfig();
 
   // Не бросаем ошибку при старте - только при использовании
   // Это позволяет health check работать даже без конфигурации
@@ -21,4 +20,17 @@ export function getTelegramConfig(): TelegramConfig {
   }
 
   return { apiId, apiHash };
+}
+
+/** True when both API credentials are set; reads the environment without logging. */
+export function hasTelegramCredentials(): boolean {
+  const { apiId, apiHash } = readTelegramConfig();
+  return Boolean(apiId && apiHash);
+}
+
+function readTelegramConfig(): TelegramConfig {
+  return {
+    apiId: parseInt(process.env.TELEGRAM_API_ID || '0', 10),
+    apiHash: process.env.TELEGRAM_API_HASH || '',
+  };
 }

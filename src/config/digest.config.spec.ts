@@ -15,6 +15,7 @@ import {
   TELEGRAM_BOT_CHAT_ID_ENV_VAR,
   TELEGRAM_BOT_TOKEN_ENV_VAR,
   getDigestConfig,
+  missingDigestVariables,
 } from './digest.config';
 
 const ALL_ENV_VARS = [
@@ -447,5 +448,84 @@ describe('getDigestConfig', () => {
       expect(actualConfig.grokApiKey).toBe('');
       expect(warnings()[0]).toContain(GROK_API_KEY_ENV_VAR);
     });
+  });
+});
+
+describe('missingDigestVariables', () => {
+  function buildSettings(
+    overrides: Partial<Parameters<typeof missingDigestVariables>[0]> = {},
+  ): Parameters<typeof missingDigestVariables>[0] {
+    return {
+      channels: ['fake_channel_one'],
+      cron: DIGEST_CRON_DEFAULT,
+      timezone: DIGEST_TIMEZONE_DEFAULT,
+      grokApiKey: inputGrokKey,
+      grokModel: GROK_MODEL_DEFAULT,
+      grokReasoningEffort: GROK_REASONING_EFFORT_DEFAULT,
+      botToken: inputBotToken,
+      botChatId: inputBotChatId,
+      ...overrides,
+    };
+  }
+
+  it('returns an empty list when every required setting is present', () => {
+    // Arrange
+    const inputSettings = buildSettings();
+
+    // Act
+    const actualMissing = missingDigestVariables(inputSettings);
+
+    // Assert
+    expect(actualMissing).toEqual([]);
+  });
+
+  it.each([
+    [DIGEST_CHANNELS_ENV_VAR, { channels: [] }],
+    [GROK_API_KEY_ENV_VAR, { grokApiKey: '' }],
+    [TELEGRAM_BOT_TOKEN_ENV_VAR, { botToken: '' }],
+    [TELEGRAM_BOT_CHAT_ID_ENV_VAR, { botChatId: '' }],
+  ])('names %s alone when only it is missing', (expectedName, inputOverrides) => {
+    // Arrange
+    const inputSettings = buildSettings(inputOverrides);
+
+    // Act
+    const actualMissing = missingDigestVariables(inputSettings);
+
+    // Assert
+    expect(actualMissing).toEqual([expectedName]);
+  });
+
+  it('names every missing variable in a fixed order and never a value', () => {
+    // Arrange
+    const inputSettings = buildSettings({
+      channels: [],
+      grokApiKey: '',
+      botToken: '',
+      botChatId: '',
+    });
+
+    // Act
+    const actualMissing = missingDigestVariables(inputSettings);
+
+    // Assert
+    expect(actualMissing).toEqual([
+      DIGEST_CHANNELS_ENV_VAR,
+      GROK_API_KEY_ENV_VAR,
+      TELEGRAM_BOT_TOKEN_ENV_VAR,
+      TELEGRAM_BOT_CHAT_ID_ENV_VAR,
+    ]);
+  });
+
+  it('returns names only, without the values of the settings that are present', () => {
+    // Arrange
+    const inputSettings = buildSettings({ channels: [] });
+
+    // Act
+    const actualText = missingDigestVariables(inputSettings).join(',');
+
+    // Assert
+    expect(actualText).not.toContain(inputGrokKey);
+    expect(actualText).not.toContain(inputBotToken);
+    expect(actualText).not.toContain(inputBotChatId);
   });
 });

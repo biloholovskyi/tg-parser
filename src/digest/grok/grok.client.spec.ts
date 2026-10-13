@@ -33,6 +33,7 @@ type FakeFetch = (url: string, init?: FakeInit) => Promise<FakeResponse>;
 
 interface FakeAgent {
   close: jest.Mock<Promise<void>, []>;
+  destroy: jest.Mock<Promise<void>, []>;
 }
 
 interface FakeAnswer {
@@ -157,7 +158,10 @@ describe('GrokClient', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     fetchSpy.mockReset();
-    mockAgent = { close: jest.fn().mockResolvedValue(undefined) };
+    mockAgent = {
+      close: jest.fn().mockResolvedValue(undefined),
+      destroy: jest.fn().mockResolvedValue(undefined),
+    };
     mockAgentClass.mockReset();
     mockAgentClass.mockImplementation(() => mockAgent);
     loggerSpies = LOGGER_LEVELS.map((level) =>
@@ -610,10 +614,10 @@ describe('GrokClient', () => {
       expect(mockAgentClass).toHaveBeenCalledTimes(1);
     });
 
-    it('closes the agent on module destroy and waits for the close', async () => {
+    it('destroys the agent on module destroy, never closes it, and waits for the destroy', async () => {
       // Arrange
       let resolveClose: () => void = () => undefined;
-      mockAgent.close.mockReturnValueOnce(
+      mockAgent.destroy.mockReturnValueOnce(
         new Promise<void>((resolve) => {
           resolveClose = resolve;
         }),
@@ -630,7 +634,8 @@ describe('GrokClient', () => {
       await destroying;
 
       // Assert
-      expect(mockAgent.close).toHaveBeenCalledTimes(1);
+      expect(mockAgent.destroy).toHaveBeenCalledTimes(1);
+      expect(mockAgent.close).not.toHaveBeenCalled();
       expect(actualDoneBeforeClose).toBe(false);
       expect(isDestroyed).toBe(true);
       expect(fetchSpy).not.toHaveBeenCalled();

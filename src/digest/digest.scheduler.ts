@@ -7,6 +7,9 @@ import {
 } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
+import { AlertService } from '../alerts/alert.service';
+import { missingDigestVariables } from '../config/digest.config';
+import { describeError } from '../shared/utils/process-handlers';
 import type { DigestConfig } from '../config/digest.config';
 import { DIGEST_CONFIG, DIGEST_JOB_NAME } from './constants';
 import { DigestService } from './digest.service';
@@ -23,10 +26,12 @@ export class DigestScheduler implements OnApplicationBootstrap, OnModuleDestroy 
     @Inject(DIGEST_CONFIG) private readonly config: DigestConfig,
     private readonly registry: SchedulerRegistry,
     private readonly digest: DigestService,
+    private readonly alerts: AlertService,
   ) {}
 
   onApplicationBootstrap(): void {
     if (!this.config.isConfigured) {
+      this.alerts.warning('Digest disabled', { missing: missingDigestVariables(this.config) });
       return;
     }
     try {
@@ -39,9 +44,12 @@ export class DigestScheduler implements OnApplicationBootstrap, OnModuleDestroy 
       job.start();
       this.logger.log(`Digest scheduled: "${this.config.cron}" ${this.config.timezone}`);
     } catch (error: unknown) {
-      this.logger.error(
-        `Digest not scheduled: ${error instanceof Error ? error.message : 'invalid schedule'}`,
-      );
+      const reason = error instanceof Error ? error.message : 'invalid schedule';
+      this.logger.error(`Digest not scheduled: ${reason}`);
+      this.alerts.error('Digest not scheduled', {
+        cron: this.config.cron,
+        reason: describeError(error),
+      });
     }
   }
 

@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import type { INestApplication } from '@nestjs/common';
+import type { AlertGate } from '../../alerts/interfaces/alert.interface';
 
 export const SHUTDOWN_SIGNALS = ['SIGTERM', 'SIGINT'] as const;
 export const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -13,22 +14,27 @@ let isShuttingDown = false;
 /**
  * Registers the top-level process handlers.
  * A background rejection is logged and the process keeps serving requests;
- * only a deliberate shutdown path ends the process.
+ * only a deliberate shutdown path ends the process. With `alerts`, both failures are reported;
+ * the uncaught exception is queued before closing, so shutdown flushes it.
  */
-export function registerProcessHandlers(app: INestApplication): void {
+export function registerProcessHandlers(app: INestApplication, alerts?: AlertGate): void {
   process.on('unhandledRejection', (reason: unknown) => {
-    logger.error(`Unhandled promise rejection: ${describeError(reason)}`);
+    const description = describeError(reason);
+    logger.error(`Unhandled promise rejection: ${description}`);
+    alerts?.error('Unhandled promise rejection', { error: description });
   });
 
   process.on('uncaughtException', (error: unknown) => {
-    logger.error(`Uncaught exception: ${describeError(error)}`);
-    void closeApplication(app, EXIT_CODE_FAILURE);
+    const description = describeError(error);
+    logger.error(`Uncaught exception: ${description}`);
+    alerts?.error('Uncaught exception, shutting down', { error: description });
+    void closeApplication(app, EXIT_CODE_FAILURE, alerts);
   });
 
   for (const signal of SHUTDOWN_SIGNALS) {
     process.once(signal, () => {
       logger.log(`${signal} received, shutting down gracefully`);
-      void closeApplication(app, EXIT_CODE_SUCCESS);
+      void closeApplication(app, EXIT_CODE_SUCCESS, alerts);
     });
   }
 }
@@ -38,11 +44,17 @@ export function registerProcessHandlers(app: INestApplication): void {
  * This is the only deliberate exit path: it runs once and always terminates,
  * even when closing hangs, so the platform can restart the instance.
  */
-export async function closeApplication(app: INestApplication, exitCode: number): Promise<void> {
+export async function closeApplication(
+  app: INestApplication,
+  exitCode: number,
+  alerts?: AlertGate,
+): Promise<void> {
   if (isShuttingDown) {
     return;
   }
   isShuttingDown = true;
+  // Requests cut off from here on are a consequence of the shutdown, not alerts of their own.
+  alerts?.beginShutdown();
 
   try {
     await withTimeout(app.close());

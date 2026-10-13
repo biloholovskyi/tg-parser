@@ -7,7 +7,9 @@ import {
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { AlertService } from '../alerts/alert.service';
 import type { DigestConfig } from '../config/digest.config';
+import { describeError } from '../shared/utils/process-handlers';
 import { BotNotifier } from './bot-notifier';
 import { DIGEST_CONFIG, DIGEST_MAX_POSTS, DIGEST_WINDOW_HOURS } from './constants';
 import type {
@@ -53,6 +55,7 @@ export class DigestService {
     private readonly translation: TranslationService,
     private readonly summary: SummaryService,
     private readonly notifier: BotNotifier,
+    private readonly alerts: AlertService,
   ) {}
 
   /** Starts a run in the background for `POST /digest/run`: 503 when unconfigured, 409 when busy. */
@@ -71,6 +74,7 @@ export class DigestService {
   async runScheduled(): Promise<void> {
     if (this.isRunning) {
       this.logger.warn('Scheduled digest skipped: a run is already in progress');
+      this.alerts.warning('Scheduled digest skipped: a run is already in progress');
       return;
     }
     await this.execute('scheduled');
@@ -89,6 +93,7 @@ export class DigestService {
           `${report.collected.channelCount} channels, ${messages.length} messages, ` +
           `${Date.now() - startedAt} ms`,
       );
+      this.reportGaps(trigger, report);
     } catch (error: unknown) {
       await this.reportFailure(trigger, error);
     } finally {
@@ -125,17 +130,49 @@ export class DigestService {
     }
   }
 
+  /** One warning per delivered run that lost something: a channel, posts, a translation, the summary. */
+  private reportGaps(trigger: DigestTrigger, report: DigestReport): void {
+    const { unavailableChannels, truncatedChannels } = report.collected;
+    const hasGaps =
+      report.isSummaryFallback ||
+      unavailableChannels.length > 0 ||
+      truncatedChannels.length > 0 ||
+      report.untranslatedCount > 0 ||
+      report.skippedPostCount > 0;
+    if (!hasGaps) {
+      return;
+    }
+    this.alerts.warning('Digest delivered with gaps', {
+      trigger,
+      isSummaryFallback: report.isSummaryFallback,
+      unavailableChannels,
+      truncatedChannels,
+      untranslatedCount: report.untranslatedCount,
+      skippedPostCount: report.skippedPostCount,
+      fallbackTopicCount: report.fallbackTopicCount,
+    });
+  }
+
   private async reportFailure(trigger: DigestTrigger, error: unknown): Promise<void> {
     const status = error instanceof HttpException ? error.getStatus() : undefined;
-    this.logger.error(
-      `Digest ${trigger} failed: ${status ?? (error instanceof Error ? error.name : 'unknown')}` +
-        `${error instanceof Error && !(error instanceof HttpException) ? ` (${error.message})` : ''}`,
-    );
+    const cause =
+      `${status ?? (error instanceof Error ? error.name : 'unknown')}` +
+      `${error instanceof Error && !(error instanceof HttpException) ? ` (${error.message})` : ''}`;
+    this.logger.error(`Digest ${trigger} failed: ${cause}`);
     const reason = (status !== undefined && FAILURE_REASONS.get(status)) || GENERIC_FAILURE_REASON;
+    this.alerts.error('Digest run failed', {
+      trigger,
+      cause: status !== undefined ? String(status) : describeError(error),
+      reason,
+    });
     try {
       await this.notifier.send([formatFailure(reason)]);
-    } catch {
+    } catch (notifyError: unknown) {
       this.logger.error('Digest failure notice not delivered');
+      this.alerts.error('Digest failure notice not delivered', {
+        trigger,
+        cause: describeError(notifyError),
+      });
     }
   }
 }

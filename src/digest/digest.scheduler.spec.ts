@@ -1,5 +1,11 @@
 import { Logger } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
+import type { AlertService } from '../alerts/alert.service';
+import {
+  GROK_API_KEY_ENV_VAR,
+  TELEGRAM_BOT_CHAT_ID_ENV_VAR,
+  TELEGRAM_BOT_TOKEN_ENV_VAR,
+} from '../config/digest.config';
 import type { DigestConfig } from '../config/digest.config';
 import { DIGEST_JOB_NAME } from './constants';
 import { DigestScheduler } from './digest.scheduler';
@@ -11,6 +17,8 @@ jest.mock('./digest.service', () => ({ DigestService: class {} }));
 const LOGGER_LEVELS = ['log', 'error', 'warn', 'debug', 'verbose', 'fatal'] as const;
 const INPUT_CRON = '0 23 * * *';
 const INPUT_TIMEZONE = 'Europe/Kyiv';
+const INPUT_FAKE_GROK_KEY = 'fake-grok-key';
+const INPUT_FAKE_TOKEN = 'fake-bot-token';
 /** 12:00 UTC on 01.06.2026; Kyiv is UTC+3 in summer, so 23:00 there is 20:00 UTC. */
 const INPUT_NOW_MS = Date.UTC(2026, 5, 1, 12, 0);
 const EXPECTED_NEXT_TICK_MS = Date.UTC(2026, 5, 1, 20, 0);
@@ -20,10 +28,10 @@ function buildConfig(overrides: Partial<DigestConfig> = {}): DigestConfig {
     channels: ['fake_channel'],
     cron: INPUT_CRON,
     timezone: INPUT_TIMEZONE,
-    grokApiKey: 'fake-grok-key',
+    grokApiKey: INPUT_FAKE_GROK_KEY,
     grokModel: 'fake-model',
     grokReasoningEffort: 'low',
-    botToken: 'fake-bot-token',
+    botToken: INPUT_FAKE_TOKEN,
     botChatId: '-100000',
     isConfigured: true,
     ...overrides,
@@ -33,18 +41,23 @@ function buildConfig(overrides: Partial<DigestConfig> = {}): DigestConfig {
 describe('DigestScheduler', () => {
   let registry: SchedulerRegistry;
   let mockRunScheduled: jest.Mock<Promise<void>, []>;
+  let mockAlerts: { info: jest.Mock; warning: jest.Mock; error: jest.Mock };
   let loggerSpies: Record<(typeof LOGGER_LEVELS)[number], jest.SpyInstance>;
 
   function createScheduler(config: DigestConfig): DigestScheduler {
-    return new DigestScheduler(config, registry, {
-      runScheduled: mockRunScheduled,
-    } as unknown as DigestService);
+    return new DigestScheduler(
+      config,
+      registry,
+      { runScheduled: mockRunScheduled } as unknown as DigestService,
+      mockAlerts as unknown as AlertService,
+    );
   }
 
   beforeEach(() => {
     jest.useFakeTimers({ now: INPUT_NOW_MS });
     registry = new SchedulerRegistry();
     mockRunScheduled = jest.fn(async () => undefined);
+    mockAlerts = { info: jest.fn(), warning: jest.fn(), error: jest.fn() };
     loggerSpies = Object.fromEntries(
       LOGGER_LEVELS.map((level) => [
         level,
@@ -175,5 +188,88 @@ describe('DigestScheduler', () => {
     // Assert
     expect(actualAct).not.toThrow();
     expect(registry.getCronJobs().size).toBe(0);
+  });
+
+  describe('alerts', () => {
+    function alertedText(): string {
+      return [mockAlerts.info, mockAlerts.warning, mockAlerts.error]
+        .flatMap((mock) => mock.mock.calls)
+        .map((call: unknown[]) => JSON.stringify(call))
+        .join('\n');
+    }
+
+    it('sends no alert when the job is scheduled', () => {
+      // Arrange
+      const scheduler = createScheduler(buildConfig());
+
+      // Act
+      scheduler.onApplicationBootstrap();
+
+      // Assert
+      expect(mockAlerts.info).not.toHaveBeenCalled();
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+      expect(mockAlerts.error).not.toHaveBeenCalled();
+    });
+
+    it('warns once with the names of the missing variables when the digest is not configured', () => {
+      // Arrange
+      const scheduler = createScheduler(
+        buildConfig({ grokApiKey: '', botChatId: '', isConfigured: false }),
+      );
+
+      // Act
+      scheduler.onApplicationBootstrap();
+
+      // Assert
+      expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.warning).toHaveBeenCalledWith('Digest disabled', {
+        missing: [GROK_API_KEY_ENV_VAR, TELEGRAM_BOT_CHAT_ID_ENV_VAR],
+      });
+      expect(mockAlerts.error).not.toHaveBeenCalled();
+    });
+
+    it('names variables only, never their values, in the disabled warning', () => {
+      // Arrange
+      const scheduler = createScheduler(buildConfig({ channels: [], isConfigured: false }));
+
+      // Act
+      scheduler.onApplicationBootstrap();
+
+      // Assert
+      const actualText = alertedText();
+      expect(actualText).not.toContain(INPUT_FAKE_TOKEN);
+      expect(actualText).not.toContain(INPUT_FAKE_GROK_KEY);
+      expect(actualText).not.toContain(TELEGRAM_BOT_TOKEN_ENV_VAR);
+    });
+
+    it.each([
+      ['an invalid schedule', { cron: 'not a cron' }],
+      ['an invalid time zone', { timezone: 'Fake/Nowhere' }],
+    ])('sends one error with the cron and the reason for %s', (_label, inputOverrides) => {
+      // Arrange
+      const inputConfig = buildConfig(inputOverrides);
+      const scheduler = createScheduler(inputConfig);
+
+      // Act
+      scheduler.onApplicationBootstrap();
+
+      // Assert
+      expect(mockAlerts.error).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.error).toHaveBeenCalledWith('Digest not scheduled', {
+        cron: inputConfig.cron,
+        reason: expect.any(String),
+      });
+      const [, actualDetails] = mockAlerts.error.mock.calls[0] as [string, { reason: string }];
+      const actualLoggedReason = String(loggerSpies.error.mock.calls[0][0]).replace(
+        /^Digest not scheduled: /,
+        '',
+      );
+      expect(actualLoggedReason.length).toBeGreaterThan(0);
+      expect(actualDetails.reason).toMatch(/^\w+: /);
+      expect(actualDetails.reason.endsWith(`: ${actualLoggedReason}`)).toBe(true);
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+      expect(alertedText()).not.toContain(INPUT_FAKE_TOKEN);
+      expect(alertedText()).not.toContain(INPUT_FAKE_GROK_KEY);
+    });
   });
 });

@@ -17,3 +17,20 @@
   - E2E: `test/setup-env.ts` blanks `ALERTS_URL`/`ALERTS_API_KEY` (chosen instead of overriding `AlertService` per spec); `no-network.e2e-spec.ts` asserts `fetch` is never called.
   - "AlertService throws" is guarded inside `AlertService.enqueue` (try/catch, tested in Phase 01); callers rely on the `AlertSink` never-throws contract and do not wrap calls.
   - Phase 03 next: digest, process handlers (`registerProcessHandlers(app, alerts)`), `main.ts` boot-failure alert, `BootConfigReporter`.
+- phase-03 start 2026-10-13T09:38:08+03:00
+- phase-03 end 2026-10-13T09:48:37+03:00
+- Phase 03 handoff (2026-10-13):
+  - Alert map coverage (design.md -> spec): login, Telegram 5xx/429, session not persisted, Redis lost/restored — Phase 02 specs; digest failed, notice not delivered, gaps, scheduled skip — `digest.service.spec.ts`; not scheduled, digest disabled — `digest.scheduler.spec.ts`; unhandled rejection, uncaught exception, shutdown error — `process-handlers.spec.ts`; boot failure — `boot-failure-alert.spec.ts`, `main.spec.ts`; incomplete configuration — `boot-config-reporter.spec.ts`.
+  - Deviation: "digest disabled" is reported by `DigestScheduler` (has the parsed config), not by `BootConfigReporter`; `missingDigestVariables` exported from `digest.config.ts`.
+  - Config loaders export silent predicates: `hasTelegramCredentials`, `hasApiKeys`, `isSessionPersistenceConfigured`.
+  - Known limit: "Error during shutdown" warning is best effort — queued after `app.close()`, usually after AlertService already drained; reaches the service only on the close-timeout branch.
+  - Finalize next: smoke with a real ALERTS_API_KEY, docs and rules drift (CLAUDE.md env table, architecture, runtime-resources constants, telegram secrets-in-alerts rule), version 1.5.1.
+- phase-04 start 2026-10-13T09:54:03+03:00
+- phase-04 end 2026-10-13T11:43:39+03:00
+- Phase 04 closeout (2026-10-13):
+  - Post-code green after audit fixes: lint, build, 62 suites / 1321 unit tests, 5 suites / 68 E2E tests.
+  - Audits: docs/reviews/security-audit-2026-10-13.md (0 critical/high; M1 redirect, M2 sanitizer fixed), docs/reviews/block-11-resource-audit.md (no leaks; dedup-before-queue, deploy false alerts, Grok agent close, per-channel alert storm fixed).
+  - Smoke: built service boots with alerts off (one warning) and with a local fake alert server (two real POST /alerts with X-API-Key, key absent from logs). Real TechAdminServer and real login smoke remain with the user.
+  - Drift: CLAUDE.md, architecture.md, runtime-resources.md, telegram.md, docs/deployment/railway-alerts.md synced; swagger.json references replaced (file not in repo).
+  - Version: package.json and package-lock.json 1.5.1, CHANGELOG [1.5.1] 13.10.2026, branch r-1.5.1.
+  - Open: guard-secrets hook pattern for ALERTS_API_KEY needs a user decision; tech debt in reflect.md.

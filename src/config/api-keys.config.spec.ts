@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { API_KEYS_ENV_VAR, getApiKeysConfig } from './api-keys.config';
+import { API_KEYS_ENV_VAR, getApiKeysConfig, hasApiKeys } from './api-keys.config';
 
 describe('getApiKeysConfig', () => {
   const originalEnv = process.env;
@@ -115,5 +115,58 @@ describe('getApiKeysConfig', () => {
 
     expect(loggedArguments).not.toContain(inputFirstApiKey);
     expect(loggedArguments).not.toContain(inputSecondApiKey);
+  });
+});
+
+describe('hasApiKeys', () => {
+  const originalEnv = process.env;
+  const levels = ['log', 'error', 'warn', 'debug', 'verbose', 'fatal'] as const;
+  let loggerSpies: jest.SpyInstance[];
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    loggerSpies = levels.map((level) =>
+      jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined),
+    );
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    jest.restoreAllMocks();
+  });
+
+  it.each([
+    ['one key', 'fake-api-key-one'],
+    ['two keys', 'fake-api-key-one,fake-api-key-two'],
+    ['a key among blanks', ' , fake-api-key-one , '],
+  ])('is true for %s and logs nothing', (_label, inputValue) => {
+    // Arrange
+    process.env[API_KEYS_ENV_VAR] = inputValue;
+
+    // Act
+    const actualResult = hasApiKeys();
+
+    // Assert
+    expect(actualResult).toBe(true);
+    loggerSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
+  });
+
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['separators and whitespace only', ' , , '],
+  ])('is false without logging when the env var is %s', (_label, inputValue) => {
+    // Arrange
+    delete process.env[API_KEYS_ENV_VAR];
+    if (inputValue !== undefined) {
+      process.env[API_KEYS_ENV_VAR] = inputValue;
+    }
+
+    // Act
+    const actualResult = hasApiKeys();
+
+    // Assert
+    expect(actualResult).toBe(false);
+    loggerSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
   });
 });

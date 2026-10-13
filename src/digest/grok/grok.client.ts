@@ -55,9 +55,12 @@ export class GrokClient implements OnModuleDestroy {
 
   constructor(@Inject(DIGEST_CONFIG) private readonly config: DigestConfig) {}
 
-  /** Closes the agent's keep-alive connections to xAI. */
+  /**
+   * Drops the agent's connections to xAI. `destroy`, not `close`: close waits for a running
+   * request, and a summary request may run for minutes past the shutdown deadline.
+   */
   async onModuleDestroy(): Promise<void> {
-    await this.agent.close();
+    await this.agent.destroy();
   }
 
   async completeJson<T>(request: GrokJsonRequest<T>): Promise<T> {

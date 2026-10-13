@@ -8,6 +8,15 @@ metadata:
 Audit log for this agent. Newest first. Reports live in `docs/reviews/security-audit-YYYY-MM-DD.md`
 (append a section when the file for that date already exists).
 
+- 2026-10-13 — block-11-alerts (uncommitted, branch r-1.5.1) → `docs/reviews/security-audit-2026-10-13.md`
+  (Russian). 0 CRITICAL / 0 HIGH; no secret reaches an outbound alert today. Accepted by user: userId +
+  username in the login alert (risks.md). Open: M1 `alert-sender.ts` fetch follows redirects and forwards
+  X-API-Key + body cross-origin (verified), `ALERTS_URL` accepts http/userinfo; M2 sanitizer key list and
+  value patterns incomplete, Buffer/Error objects pass via Object.entries, design says flat only;
+  L1 raw third-party error.message in unhandledRejection/boot/digest alerts; L2 dedup key includes channel
+  username, info alerts never deduped; L3 malformed REDIS_URL throws in ioredis ctor and kills boot.
+  npm runtime: 16 (1 critical proxy-addr). Verdict: OK behind trusted keys with https ALERTS_URL.
+
 - 2026-09-26 — block-10-daily-digest (uncommitted, Redis sessions + digest) → `docs/reviews/block-10-security-audit.md`
   (Russian, caller-chosen path). 0 CRITICAL / 0 HIGH. Accepted by user (do not re-litigate): all sessions
   persisted in Redis, AES-256-GCM (ADR adr-session-redis.md); private-channel text sent to xAI (risks.md).

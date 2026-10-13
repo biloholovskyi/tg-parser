@@ -155,3 +155,18 @@ attaches real process handlers. See also [[project-test-run-environment]].
     `AlertService` (the real `AlertsModule` is global and absent there). A pure helper spec can build real
     GramJS objects with `new Api.User({ id: bigInt(42) } as never)` (`big-integer` default import).
     A spec that asserts "no alert" must `mockClear()` the sink after `authenticateFully`, which sends the login info.
+
+23. `src/main.ts` runs `bootstrap()` on import. `src/main.spec.ts` loads it with
+    `jest.isolateModulesAsync(async () => { await import('./main') })` and hoisted `jest.mock` factories that
+    forward to top-level `mockX` fns (`NestFactory.create`, `sendAlert`, `getAlertsConfig`, process handlers,
+    http pipeline; `./app.module` replaced by an empty class). The isolated registry has its own
+    `@nestjs/common`, so a `Logger.prototype` spy from the outer import does not mute it: import
+    `@nestjs/common` inside the isolated callback and spy there. In a Bash heredoc feeding Python, write
+    `'\n'` inside a TS string only with a raw/separate file: a plain Python string turns it into a real newline.
+
+24. Since block-11 Finalize, process handlers take an `AlertGate` (sink + `beginShutdown`): every mock alert
+    object passed to `registerProcessHandlers` / `closeApplication` needs `beginShutdown: jest.fn()`. The undici
+    `Agent` fake in `grok.client.spec.ts` needs `destroy` as well as `close`. `sendAlert` awaits
+    `response.body?.cancel()`, so a fake fetch answer is either `new Response(null, ...)` or an object with
+    `body: { cancel: jest.fn() }`. Even a quoted `<<'EOF'` Bash heredoc here collapsed `\n` in a Python
+    script into a real newline inside a TS string: write edit scripts with the Write tool when they carry backslashes.

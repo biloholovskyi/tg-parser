@@ -867,4 +867,110 @@ describe('failWith with an alert sink', () => {
       expect(actualLines[0]).toEqual(actualLines[1]);
     },
   );
+
+  describe('with an alert context', () => {
+    const inputContext = { operation: 'Posts', details: { channel: 'fake_channel' } };
+
+    it('names the context operation in an error alert and merges the context details', () => {
+      // Arrange
+      const inputError = new Error('fake ECONNRESET');
+
+      // Act
+      failWith(mockLogger, 'Posts: @fake_channel', inputError, mockAlerts, inputContext);
+
+      // Assert
+      expect(mockAlerts.error).toHaveBeenCalledWith(
+        `Posts failed: ${HttpStatus.SERVICE_UNAVAILABLE}`,
+        {
+          channel: 'fake_channel',
+          operation: 'Posts',
+          status: HttpStatus.SERVICE_UNAVAILABLE,
+          error: describeError(inputError),
+        },
+      );
+    });
+
+    it('keeps the full operation in the log line', () => {
+      // Act
+      failWith(
+        mockLogger,
+        'Posts: @fake_channel',
+        new Error('fake ECONNRESET'),
+        mockAlerts,
+        inputContext,
+      );
+
+      // Assert
+      expect(mockError).toHaveBeenCalledTimes(1);
+      expect(String(mockError.mock.calls[0][0])).toMatch(
+        new RegExp(`^Posts: @fake_channel failed: ${HttpStatus.SERVICE_UNAVAILABLE} `),
+      );
+    });
+
+    it('names the context operation in a flood wait warning', () => {
+      // Arrange
+      const inputCode = `FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`;
+
+      // Act
+      failWith(mockLogger, 'Posts: @fake_channel', rpcError(inputCode), mockAlerts, inputContext);
+
+      // Assert
+      expect(mockAlerts.warning).toHaveBeenCalledWith(
+        `Posts failed: ${HttpStatus.TOO_MANY_REQUESTS}`,
+        {
+          channel: 'fake_channel',
+          operation: 'Posts',
+          status: HttpStatus.TOO_MANY_REQUESTS,
+          error: inputCode,
+        },
+      );
+    });
+
+    it('lets operation, status and error win over context details with the same keys', () => {
+      // Arrange
+      const inputError = new Error('fake ECONNRESET');
+      const inputClashingContext = {
+        operation: 'Posts',
+        details: { operation: 'fake-other', status: 0, error: 'fake-other' },
+      };
+
+      // Act
+      failWith(mockLogger, 'Posts: @fake_channel', inputError, mockAlerts, inputClashingContext);
+
+      // Assert
+      expect(mockAlerts.error).toHaveBeenCalledWith(expect.any(String), {
+        operation: 'Posts',
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        error: describeError(inputError),
+      });
+    });
+
+    it('works with a context that carries no details', () => {
+      // Act
+      failWith(mockLogger, 'Posts: @fake_channel', new Error('fake ECONNRESET'), mockAlerts, {
+        operation: 'Posts',
+      });
+
+      // Assert
+      expect(mockAlerts.error).toHaveBeenCalledWith(
+        `Posts failed: ${HttpStatus.SERVICE_UNAVAILABLE}`,
+        expect.not.objectContaining({ channel: expect.anything() }),
+      );
+    });
+
+    it('sends no alert for a caller-caused failure even with a context', () => {
+      // Act
+      failWith(
+        mockLogger,
+        'Posts: @fake_channel',
+        rpcError('CHANNEL_PRIVATE'),
+        mockAlerts,
+        inputContext,
+      );
+
+      // Assert
+      expect(mockAlerts.error).not.toHaveBeenCalled();
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+    });
+  });
 });

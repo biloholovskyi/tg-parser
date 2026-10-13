@@ -25,6 +25,11 @@ export function getApiKeysConfig(): ApiKeysConfig {
   return { apiKeys };
 }
 
+/** True when at least one caller key is set; reads the environment without logging. */
+export function hasApiKeys(): boolean {
+  return parseApiKeys(process.env[API_KEYS_ENV_VAR] || '').length > 0;
+}
+
 function parseApiKeys(rawApiKeys: string): string[] {
   const apiKeys = rawApiKeys
     .split(KEY_SEPARATOR)

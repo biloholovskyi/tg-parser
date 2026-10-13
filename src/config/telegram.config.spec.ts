@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { getTelegramConfig } from './telegram.config';
+import { getTelegramConfig, hasTelegramCredentials } from './telegram.config';
 
 const INPUT_API_ID = 12345;
 const INPUT_API_HASH = 'fake-api-hash';
@@ -110,5 +110,62 @@ describe('getTelegramConfig', () => {
     // Assert
     const actualText = warnSpy.mock.calls.flat().map(String).join('\n');
     expect(actualText).toMatch(/^[\x20-\x7E\n]+$/);
+  });
+});
+
+describe('hasTelegramCredentials', () => {
+  const originalEnv = process.env;
+  const levels = ['log', 'error', 'warn', 'debug', 'verbose', 'fatal'] as const;
+  let loggerSpies: jest.SpyInstance[];
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    loggerSpies = levels.map((level) =>
+      jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined),
+    );
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    jest.restoreAllMocks();
+  });
+
+  it('is true when both the api id and the hash are set, and logs nothing', () => {
+    // Arrange
+    process.env.TELEGRAM_API_ID = String(INPUT_API_ID);
+    process.env.TELEGRAM_API_HASH = INPUT_API_HASH;
+
+    // Act
+    const actualResult = hasTelegramCredentials();
+
+    // Assert
+    expect(actualResult).toBe(true);
+    loggerSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
+  });
+
+  it.each([
+    ['the api id is missing', undefined, INPUT_API_HASH],
+    ['the api id is not a number', 'fake-not-a-number', INPUT_API_HASH],
+    ['the api id is zero', '0', INPUT_API_HASH],
+    ['the hash is missing', String(INPUT_API_ID), undefined],
+    ['the hash is empty', String(INPUT_API_ID), ''],
+    ['both are missing', undefined, undefined],
+  ])('is false without logging when %s', (_label, inputApiId, inputApiHash) => {
+    // Arrange
+    delete process.env.TELEGRAM_API_ID;
+    delete process.env.TELEGRAM_API_HASH;
+    if (inputApiId !== undefined) {
+      process.env.TELEGRAM_API_ID = inputApiId;
+    }
+    if (inputApiHash !== undefined) {
+      process.env.TELEGRAM_API_HASH = inputApiHash;
+    }
+
+    // Act
+    const actualResult = hasTelegramCredentials();
+
+    // Assert
+    expect(actualResult).toBe(false);
+    loggerSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
   });
 });

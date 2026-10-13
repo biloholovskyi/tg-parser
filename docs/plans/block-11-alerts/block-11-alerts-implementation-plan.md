@@ -26,14 +26,16 @@
 - Исследование: [research.md](research.md)
 - Дизайн и карта алертов: [design.md](design.md)
 - Риски и откат: [risks.md](risks.md)
-- Контракт внешнего сервиса: `swagger.json` в корне
+- Контракт внешнего сервиса: раздел «Внешний сервис» в [research.md](research.md) (сам `swagger.json` в репозиторий не входит)
 
 ## Фазы
 
 - Phase 01 (done, 103 юнит-теста зелёные) — модуль алертов: [phase-01-alerts-module.md](phase-01-alerts-module.md)
 - Phase 02 (done, 518 unit + 68 E2E зелёные) — логин, Telegram и Redis: [phase-02-auth-telegram-redis.md](phase-02-auth-telegram-redis.md)
-- Phase 03 (todo) — дайджест, процесс и конфигурация: [phase-03-digest-process-boot.md](phase-03-digest-process-boot.md)
-- Phase 04 (todo) — Finalize: [phase-04-finalize.md](phase-04-finalize.md)
+- Phase 03 (done, 1231 unit + 68 E2E зелёные) — дайджест, процесс и конфигурация: [phase-03-digest-process-boot.md](phase-03-digest-process-boot.md)
+- Phase 04 (done; smoke на настоящем TechAdminServer и настоящий логин — за пользователем) — Finalize: [phase-04-finalize.md](phase-04-finalize.md)
+
+Отчёт: [block-11-alerts-1.5.1-2026-10-13.md](../../reports/block-11-alerts-1.5.1-2026-10-13.md)
 
 ## Порядок и границы
 
@@ -59,6 +61,7 @@
 
 ## Следующие действия
 
-1. Пользователь читает план и присылает правки.
-2. Получить API-ключ TechAdminServer и задать `ALERTS_URL`, `ALERTS_API_KEY` в `.env` (вручную) и на Railway к Phase 04.
-3. После одобрения — Phase 03 через `/implement-plan-step`.
+1. Задать `ALERTS_URL` и `ALERTS_API_KEY` в Railway по `docs/deployment/railway-alerts.md`.
+2. Smoke на настоящем TechAdminServer: алерт неполной конфигурации и info при логине со статусом `sent`.
+3. Решить, нужен ли в `.claude/hooks/guard-secrets.js` запрет на литерал `ALERTS_API_KEY`.
+4. Коммит — по запросу пользователя.
