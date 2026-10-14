@@ -1,3 +1,8 @@
+[1.6.0] 14.10.2026
+
+- Cheaper digest: by default (DIGEST_TRANSLATION=off) the summary reads the original posts and writes Russian theses directly, only fallback blocks are translated; translation runs on GROK_TRANSLATION_MODEL (default grok-4.20-0309-non-reasoning) with GROK_TRANSLATION_REASONING_EFFORT (default off), and DIGEST_TRANSLATION=on brings back translating every post first; posts are cut to 1200 characters; the log shows Grok token usage per stage
+- A Telegram flood limit no longer drops the digest: channels are looked up by username once per 30 days (channel peers cached in Redis under tg:peer:*, or in a bounded in-memory map), a flood wait up to 30 minutes (60 per run) is sat out and collection resumes from the same channel, and logs show the wait as FLOOD_WAIT_N
+
 [1.5.1] 13.10.2026
 
 - Alerts to TechAdminServer (ALERTS_URL, ALERTS_API_KEY, ALERTS_SERVICE_NAME): info on every successful login with the Telegram id and username only, warnings and errors on Telegram 5xx and flood waits, Redis outages, unsaved sessions, digest failures and gaps, process crashes, a failed start and an incomplete configuration; sent in the background with a bounded queue, a 10-minute dedup window and secret stripping, disabled when the variables are not set

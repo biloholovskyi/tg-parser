@@ -7,7 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { AlertService } from '../alerts/alert.service';
-import type { DigestConfig } from '../config/digest.config';
+import type { DigestConfig, DigestTranslationMode } from '../config/digest.config';
 import { BotError } from './bot-notifier';
 import type { BotNotifier } from './bot-notifier';
 import { DIGEST_MAX_POSTS, DIGEST_WINDOW_HOURS } from './constants';
@@ -18,13 +18,16 @@ import {
 } from './digest.service';
 import type { CollectedPosts, DigestPost } from './interfaces/digest-post.interface';
 import type {
+  DigestTopic,
   SummaryResult,
+  ThesisTranslationResult,
   TranslatedPost,
   TranslationResult,
 } from './interfaces/digest-topic.interface';
 import type { PostCollector } from './post-collector';
 import type { SummaryService } from './summary.service';
 import type { TranslationService } from './translation.service';
+import { delayUnlessCancelled } from './utils/cancellable-delay';
 
 /** The real collector imports the TelegramService facade, which loads GramJS. */
 jest.mock('./post-collector', () => ({ PostCollector: class {} }));
@@ -50,6 +53,8 @@ const SESSION_REASON = 'Сессия дайджеста не задана или
 const FLOOD_REASON = 'Telegram ограничил частоту запросов';
 const UNAVAILABLE_REASON = 'Telegram или хранилище сессий недоступны';
 const GENERIC_REASON = 'Внутренняя ошибка, подробности в логах сервиса.';
+
+type CollectArgs = [readonly string[], number, AbortSignal?];
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -108,7 +113,16 @@ function summarize(posts: TranslatedPost[]): SummaryResult {
   };
 }
 
-function buildConfig(isConfigured = true): DigestConfig {
+/** A post as the summary reads it with DIGEST_TRANSLATION=off. */
+function asOriginalPost(post: DigestPost): TranslatedPost {
+  return { ...post, translated: post.text, isUntranslated: false };
+}
+
+/** The pre-existing suites run with DIGEST_TRANSLATION=on, where every post is translated. */
+function buildConfig(
+  isConfigured = true,
+  translationMode: DigestTranslationMode = 'on',
+): DigestConfig {
   return {
     channels: INPUT_CHANNELS,
     cron: '0 23 * * *',
@@ -116,6 +130,9 @@ function buildConfig(isConfigured = true): DigestConfig {
     grokApiKey: INPUT_FAKE_GROK_KEY,
     grokModel: 'fake-model',
     grokReasoningEffort: 'low',
+    translationMode,
+    grokTranslationModel: 'fake-translation-model',
+    grokTranslationReasoningEffort: 'off',
     botToken: INPUT_FAKE_TOKEN,
     botChatId: '-100000',
     isConfigured,
@@ -123,9 +140,10 @@ function buildConfig(isConfigured = true): DigestConfig {
 }
 
 describe('DigestService', () => {
-  let mockCollect: jest.Mock<Promise<CollectedPosts>, [readonly string[], number]>;
+  let mockCollect: jest.Mock<Promise<CollectedPosts>, CollectArgs>;
   let mockTranslate: jest.Mock<Promise<TranslationResult>, [DigestPost[]]>;
   let mockSummarize: jest.Mock<Promise<SummaryResult>, [TranslatedPost[]]>;
+  let mockTranslateTheses: jest.Mock<Promise<ThesisTranslationResult>, [DigestTopic[]]>;
   let mockSend: jest.Mock<Promise<void>, [readonly string[]]>;
   let mockAlerts: { info: jest.Mock; warning: jest.Mock; error: jest.Mock };
   let loggerSpies: Record<(typeof LOGGER_LEVELS)[number], jest.SpyInstance>;
@@ -135,7 +153,10 @@ describe('DigestService', () => {
     return new DigestService(
       config,
       { collect: mockCollect } as unknown as PostCollector,
-      { translate: mockTranslate } as unknown as TranslationService,
+      {
+        translate: mockTranslate,
+        translateTheses: mockTranslateTheses,
+      } as unknown as TranslationService,
       { summarize: mockSummarize } as unknown as SummaryService,
       { send: mockSend } as unknown as BotNotifier,
       mockAlerts as unknown as AlertService,
@@ -159,11 +180,15 @@ describe('DigestService', () => {
 
   beforeEach(() => {
     inputPosts = [buildPost(1), buildPost(2), buildPost(3, false)];
-    mockCollect = jest.fn<Promise<CollectedPosts>, [readonly string[], number]>(async () =>
+    mockCollect = jest.fn<Promise<CollectedPosts>, CollectArgs>(async () =>
       buildCollected(inputPosts),
     );
     mockTranslate = jest.fn(async (posts: DigestPost[]) => translate(posts));
     mockSummarize = jest.fn(async (posts: TranslatedPost[]) => summarize(posts));
+    mockTranslateTheses = jest.fn(async (topics: DigestTopic[]) => ({
+      topics,
+      untranslatedCount: 0,
+    }));
     mockSend = jest.fn<Promise<void>, [readonly string[]]>(async () => undefined);
     mockAlerts = { info: jest.fn(), warning: jest.fn(), error: jest.fn() };
     loggerSpies = Object.fromEntries(
@@ -190,7 +215,11 @@ describe('DigestService', () => {
 
       // Assert
       expect(actualResponse).toEqual({ status: 'started' });
-      expect(mockCollect).toHaveBeenCalledWith(INPUT_CHANNELS, DIGEST_WINDOW_HOURS);
+      expect(mockCollect).toHaveBeenCalledWith(
+        INPUT_CHANNELS,
+        DIGEST_WINDOW_HOURS,
+        expect.any(AbortSignal),
+      );
       expect(mockSend).toHaveBeenCalledTimes(1);
       expect(sentText()).toContain('Общий тезис');
     });
@@ -411,6 +440,237 @@ describe('DigestService', () => {
       const [actualPosts] = mockSummarize.mock.calls[0];
       expect(actualPosts.map((post) => post.ref)).toEqual(['p1', 'p2', 'p3']);
       expect(actualPosts[0].translated).toBe(`${SECRET_TRANSLATED} p1`);
+    });
+  });
+
+  describe('DIGEST_TRANSLATION=off', () => {
+    const THESIS_TRANSLATION = 'Переведённый резервный тезис';
+
+    function createOffService(): DigestService {
+      return createService(buildConfig(true, 'off'));
+    }
+
+    it('never calls translate and gives the summary the originals with translated === text', async () => {
+      // Arrange
+      const service = createOffService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockTranslate).not.toHaveBeenCalled();
+      expect(mockSummarize).toHaveBeenCalledTimes(1);
+      const [actualPosts] = mockSummarize.mock.calls[0];
+      expect(actualPosts).toEqual(
+        inputPosts.map((post) => ({ ...post, translated: post.text, isUntranslated: false })),
+      );
+      expect(sentText()).not.toContain(SECRET_TRANSLATED);
+    });
+
+    it('logs that the originals are summarized instead of translating', async () => {
+      // Arrange
+      const service = createOffService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(allLogCalls().map(([message]) => String(message))).toContain(
+        `Digest: collected ${inputPosts.length} posts, summarizing the originals`,
+      );
+      expect(loggedText()).not.toContain('translating');
+      expect(allLogCalls()).toHaveLength(EXPECTED_SUCCESS_LOG_LINES);
+    });
+
+    it('applies DIGEST_MAX_POSTS before the summary', async () => {
+      // Arrange
+      inputPosts = Array.from({ length: DIGEST_MAX_POSTS + EXTRA_POSTS }, (_, index) =>
+        buildPost(index + 1),
+      );
+      const service = createOffService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockSummarize.mock.calls[0][0]).toHaveLength(DIGEST_MAX_POSTS);
+      expect(sentText()).toContain(`Не вошло сверх лимита: ${EXTRA_POSTS}`);
+    });
+
+    it('passes the summary topics to translateTheses after the summary', async () => {
+      // Arrange
+      const service = createOffService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockTranslateTheses).toHaveBeenCalledTimes(1);
+      const [actualTopics] = mockTranslateTheses.mock.calls[0];
+      expect(actualTopics).toEqual(summarize(inputPosts.map(asOriginalPost)).topics);
+      expect(mockTranslateTheses.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mockSummarize.mock.invocationCallOrder[0],
+      );
+      expect(mockTranslateTheses.mock.invocationCallOrder[0]).toBeLessThan(
+        mockSend.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('sends the theses translateTheses returned and its untranslated count', async () => {
+      // Arrange
+      mockSummarize.mockResolvedValueOnce({
+        topics: [
+          { thesis: 'Общий тезис', viewpoints: [], refs: ['p1'], isFallback: false },
+          { thesis: `${SECRET_ORIGINAL} 2`, viewpoints: [], refs: ['p2'], isFallback: true },
+        ],
+        fallbackTopicCount: 1,
+      });
+      mockTranslateTheses.mockImplementationOnce(async (topics: DigestTopic[]) => ({
+        topics: topics.map((topic) =>
+          topic.isFallback ? { ...topic, thesis: THESIS_TRANSLATION } : topic,
+        ),
+        untranslatedCount: 1,
+      }));
+      const service = createOffService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      const actualText = sentText();
+      expect(actualText).toContain(THESIS_TRANSLATION);
+      expect(actualText).toContain('Общий тезис');
+      expect(actualText).not.toContain(`${SECRET_ORIGINAL} 2`);
+      expect(actualText).toContain('Без перевода: 1');
+      expect(mockAlerts.warning).toHaveBeenCalledWith(
+        'Digest delivered with gaps',
+        expect.objectContaining({ untranslatedCount: 1, fallbackTopicCount: 1 }),
+      );
+    });
+
+    it('reports no untranslated posts and no gap when every thesis is translated', async () => {
+      // Arrange
+      const service = createOffService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(sentText()).not.toContain('Без перевода');
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+    });
+
+    it('lists the originals when the summary fails and then translates their theses', async () => {
+      // Arrange
+      mockSummarize.mockRejectedValueOnce(new Error('fake grok failure'));
+      mockTranslateTheses.mockImplementationOnce(async (topics: DigestTopic[]) => ({
+        topics: topics.map((topic) => ({
+          ...topic,
+          thesis: `${THESIS_TRANSLATION} ${topic.refs[0]}`,
+        })),
+        untranslatedCount: 0,
+      }));
+      const service = createOffService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockTranslateTheses).toHaveBeenCalledTimes(1);
+      const [actualTopics] = mockTranslateTheses.mock.calls[0];
+      expect(actualTopics).toEqual([
+        { thesis: `${SECRET_ORIGINAL} 1`, viewpoints: [], refs: ['p1'], isFallback: true },
+        { thesis: `${SECRET_ORIGINAL} 2`, viewpoints: [], refs: ['p2'], isFallback: true },
+      ]);
+      const actualText = sentText();
+      expect(actualText).toContain(`• ${THESIS_TRANSLATION} p1`);
+      expect(actualText).toContain(`• ${THESIS_TRANSLATION} p2`);
+      expect(actualText).not.toContain(SECRET_ORIGINAL);
+      expect(actualText).toContain('Саммари не собрано, посты перечислены списком');
+      expect(actualText).toContain(`Блоков без группировки: ${EXPECTED_FALLBACK_TOPICS}`);
+    });
+
+    it('counts the fallback theses left untranslated after a summary failure', async () => {
+      // Arrange
+      mockSummarize.mockRejectedValueOnce(new Error('fake grok failure'));
+      mockTranslateTheses.mockImplementationOnce(async (topics: DigestTopic[]) => ({
+        topics,
+        untranslatedCount: topics.length,
+      }));
+      const service = createOffService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(sentText()).toContain(`Без перевода: ${EXPECTED_FALLBACK_TOPICS}`);
+      expect(mockAlerts.warning).toHaveBeenCalledWith(
+        'Digest delivered with gaps',
+        expect.objectContaining({
+          isSummaryFallback: true,
+          untranslatedCount: EXPECTED_FALLBACK_TOPICS,
+        }),
+      );
+    });
+
+    it('reports a translateTheses failure as a failed run', async () => {
+      // Arrange
+      mockTranslateTheses.mockRejectedValueOnce(new TypeError('fake thesis failure'));
+      const service = createOffService();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(sentText()).toContain(GENERIC_REASON);
+      expect(mockAlerts.error).toHaveBeenCalledWith('Digest run failed', expect.anything());
+    });
+  });
+
+  describe('DIGEST_TRANSLATION=on', () => {
+    it('translates before the summary and never calls translateTheses', async () => {
+      // Arrange
+      const service = createService(buildConfig(true, 'on'));
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockTranslate).toHaveBeenCalledTimes(1);
+      expect(mockTranslateTheses).not.toHaveBeenCalled();
+      expect(mockTranslate.mock.invocationCallOrder[0]).toBeLessThan(
+        mockSummarize.mock.invocationCallOrder[0],
+      );
+      expect(mockSummarize.mock.calls[0][0][0].translated).toBe(`${SECRET_TRANSLATED} p1`);
+    });
+
+    it('keeps the summary-fallback topics as translated, without translateTheses', async () => {
+      // Arrange
+      mockSummarize.mockRejectedValueOnce(new Error('fake grok failure'));
+      const service = createService(buildConfig(true, 'on'));
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockTranslateTheses).not.toHaveBeenCalled();
+      expect(sentText()).toContain(`• ${SECRET_TRANSLATED} p1`);
+    });
+
+    it('reports only the untranslated posts of translate', async () => {
+      // Arrange
+      mockTranslate.mockImplementationOnce(async (posts: DigestPost[]) => ({
+        ...translate(posts),
+        untranslatedCount: 1,
+      }));
+      const service = createService(buildConfig(true, 'on'));
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(sentText()).toContain('Без перевода: 1');
     });
   });
 
@@ -866,6 +1126,157 @@ describe('DigestService', () => {
       expect(actualText).not.toContain(INPUT_FAKE_SESSION);
       expect(actualText).not.toContain(SECRET_ORIGINAL);
       expect(actualText).not.toContain(SECRET_TRANSLATED);
+    });
+  });
+
+  describe('cancellation on shutdown (onModuleDestroy)', () => {
+    /** A Telegram flood wait the fake collector sits out, far longer than any test runs. */
+    const INPUT_FLOOD_WAIT_MS = 30 * 60 * 1000;
+    const EXPECTED_CANCELLED_LINE = 'cancelled: the application is shutting down';
+
+    /** A collector that is sitting out a flood limit when the run is cancelled. */
+    function collectWaitingOnFloodLimit(): void {
+      mockCollect.mockImplementationOnce(async (_channels, _hoursBack, signal) => {
+        if (!signal) {
+          throw new Error('fake collector expected a signal');
+        }
+        await delayUnlessCancelled(INPUT_FLOOD_WAIT_MS, signal);
+        return buildCollected(inputPosts);
+      });
+    }
+
+    function noAlertSent(): boolean {
+      return [mockAlerts.info, mockAlerts.warning, mockAlerts.error].every(
+        (mock) => mock.mock.calls.length === 0,
+      );
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    });
+
+    it('ends a manual run waiting in collect at once, sends nothing and alerts nothing', async () => {
+      // Arrange
+      collectWaitingOnFloodLimit();
+      const service = createService();
+      service.start();
+      await flushBackground();
+      const actualTimersWhileWaiting = jest.getTimerCount();
+
+      // Act
+      service.onModuleDestroy();
+      await flushBackground();
+
+      // Assert
+      expect(actualTimersWhileWaiting).toBe(1);
+      expect(jest.getTimerCount()).toBe(0);
+      expect(mockTranslate).not.toHaveBeenCalled();
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(noAlertSent()).toBe(true);
+      expect(loggerSpies.error).not.toHaveBeenCalled();
+      expect(loggerSpies.warn).toHaveBeenCalledTimes(1);
+      expect(loggerSpies.warn).toHaveBeenCalledWith(`Digest manual ${EXPECTED_CANCELLED_LINE}`);
+    });
+
+    it('releases the running flag, so a later start() is accepted and runs', async () => {
+      // Arrange
+      collectWaitingOnFloodLimit();
+      const service = createService();
+      service.start();
+      await flushBackground();
+      service.onModuleDestroy();
+      await flushBackground();
+
+      // Act
+      const actualResponse = service.start();
+      await flushBackground();
+
+      // Assert
+      expect(actualResponse).toEqual({ status: 'started' });
+      expect(mockCollect).toHaveBeenCalledTimes(2);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a cancelled scheduled run resolve with its own warn line', async () => {
+      // Arrange
+      collectWaitingOnFloodLimit();
+      const service = createService();
+      const actualRun = service.runScheduled();
+      await flushBackground();
+
+      // Act
+      service.onModuleDestroy();
+      await actualRun;
+
+      // Assert
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(noAlertSent()).toBe(true);
+      expect(loggerSpies.warn).toHaveBeenCalledWith(`Digest scheduled ${EXPECTED_CANCELLED_LINE}`);
+    });
+
+    it('passes each run its own signal, not aborted while the run is live', async () => {
+      // Arrange
+      const service = createService();
+
+      // Act
+      await service.runScheduled();
+      await service.runScheduled();
+
+      // Assert
+      const [[, , actualFirst], [, , actualSecond]] = mockCollect.mock.calls;
+      expect(actualFirst).toBeInstanceOf(AbortSignal);
+      expect(actualSecond).toBeInstanceOf(AbortSignal);
+      expect(actualFirst).not.toBe(actualSecond);
+      expect(actualFirst?.aborted).toBe(false);
+    });
+
+    it('answers 409 to start() while a run waits on a flood limit', async () => {
+      // Arrange
+      collectWaitingOnFloodLimit();
+      const service = createService();
+      service.start();
+      await flushBackground();
+
+      // Act
+      const actualSecond = (): unknown => service.start();
+
+      // Assert
+      expect(actualSecond).toThrow(ConflictException);
+      expect(actualSecond).toThrow(DIGEST_ALREADY_RUNNING_MESSAGE);
+      expect(mockCollect).toHaveBeenCalledTimes(1);
+
+      service.onModuleDestroy();
+      await flushBackground();
+    });
+
+    it('is a no-op when no run is in progress', async () => {
+      // Arrange
+      const service = createService();
+      await service.runScheduled();
+      jest.clearAllMocks();
+
+      // Act
+      const actualAct = (): void => service.onModuleDestroy();
+
+      // Assert
+      expect(actualAct).not.toThrow();
+      expect(service.start()).toEqual({ status: 'started' });
+      await flushBackground();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(loggerSpies.warn).not.toHaveBeenCalled();
+    });
+
+    it('does not abort a run that started after an earlier shutdown call', async () => {
+      // Arrange
+      const service = createService();
+      service.onModuleDestroy();
+
+      // Act
+      await service.runScheduled();
+
+      // Assert
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(loggerSpies.warn).not.toHaveBeenCalled();
     });
   });
 });

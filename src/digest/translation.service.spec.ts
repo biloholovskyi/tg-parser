@@ -6,11 +6,14 @@ import {
   TRANSLATION_MISSING_RETRIES,
 } from './constants';
 import { GrokClient, GrokError } from './grok/grok.client';
+import type { DigestConfig } from '../config/digest.config';
 import type { GrokJsonRequest } from './grok/grok.client';
+import { GrokUsageMeter } from './grok/grok-usage';
 import { TRANSLATION_SYSTEM_PROMPT } from './grok/prompts';
 import { TRANSLATION_SCHEMA, isTranslationAnswer } from './grok/schemas';
 import type { TranslationAnswer } from './grok/schemas';
 import type { DigestPost } from './interfaces/digest-post.interface';
+import type { DigestTopic } from './interfaces/digest-topic.interface';
 import { TranslationService } from './translation.service';
 
 type CompleteJson = jest.Mock<Promise<unknown>, [GrokJsonRequest<unknown>]>;
@@ -23,6 +26,23 @@ const LONG_POST_COUNT = Math.ceil((2 * GROK_TRANSLATE_BATCH_CHARS) / DIGEST_POST
 const SECRET_MARKER = 'SECRET-POST-BODY';
 /** Fake time one Grok call takes in the log-line test. */
 const INPUT_ELAPSED_MS = 1234;
+const INPUT_TRANSLATION_MODEL = 'fake-translation-model';
+const INPUT_MAIN_MODEL = 'fake-main-model';
+
+const mockConfig: DigestConfig = {
+  channels: ['fake_channel'],
+  cron: '0 23 * * *',
+  timezone: 'Europe/Kyiv',
+  grokApiKey: 'fake-grok-key',
+  grokModel: INPUT_MAIN_MODEL,
+  grokReasoningEffort: 'high',
+  translationMode: 'off',
+  grokTranslationModel: INPUT_TRANSLATION_MODEL,
+  grokTranslationReasoningEffort: 'off',
+  botToken: 'fake-bot-token',
+  botChatId: '-100000',
+  isConfigured: true,
+};
 
 function buildPost(index: number, text = `fake original ${index} ${SECRET_MARKER}`): DigestPost {
   return {
@@ -98,7 +118,10 @@ describe('TranslationService', () => {
     loggerSpies = LOGGER_LEVELS.map((level) =>
       jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined),
     );
-    service = new TranslationService({ completeJson: mockCompleteJson } as unknown as GrokClient);
+    service = new TranslationService(
+      { completeJson: mockCompleteJson } as unknown as GrokClient,
+      mockConfig,
+    );
   });
 
   afterEach(() => {
@@ -120,7 +143,51 @@ describe('TranslationService', () => {
       schemaName: 'translations',
       schema: TRANSLATION_SCHEMA,
       isValid: isTranslationAnswer,
+      model: INPUT_TRANSLATION_MODEL,
+      reasoningEffort: 'off',
+      meter: expect.any(GrokUsageMeter),
     });
+  });
+
+  it('uses the translation model and effort, never the main ones, on every request', async () => {
+    // Arrange
+    mockCompleteJson
+      .mockImplementationOnce(answerAll(new Set(['p2'])))
+      .mockImplementation(answerAll());
+
+    // Act
+    await service.translate([buildPost(1), buildPost(2)]);
+
+    // Assert
+    expect(mockCompleteJson).toHaveBeenCalledTimes(2);
+    for (const [actualRequest] of mockCompleteJson.mock.calls) {
+      expect(actualRequest.model).toBe(mockConfig.grokTranslationModel);
+      expect(actualRequest.model).not.toBe(mockConfig.grokModel);
+      expect(actualRequest.reasoningEffort).toBe(mockConfig.grokTranslationReasoningEffort);
+    }
+  });
+
+  it('shares one meter across all batches of a call and logs its sum', async () => {
+    // Arrange
+    const inputUsage = { promptTokens: 11, completionTokens: 4, reasoningTokens: 1 };
+    mockCompleteJson.mockImplementation(async (request) => {
+      request.meter?.add(inputUsage);
+      return answerAll()(request);
+    });
+
+    // Act
+    await service.translate(buildLongPosts());
+
+    // Assert
+    const actualCalls = mockCompleteJson.mock.calls.length;
+    const actualMeters = new Set(mockCompleteJson.mock.calls.map(([request]) => request.meter));
+    expect(actualCalls).toBeGreaterThan(2);
+    expect(actualMeters.size).toBe(1);
+    expect(loggedText()).toContain(
+      `tokens in=${actualCalls * inputUsage.promptTokens} ` +
+        `out=${actualCalls * inputUsage.completionTokens} ` +
+        `reasoning=${actualCalls * inputUsage.reasoningTokens}`,
+    );
   });
 
   it('translates every post with text and reports no untranslated posts', async () => {
@@ -463,7 +530,10 @@ describe('TranslationService', () => {
     // Assert
     expect(logCallCount()).toBe(1);
     const actualLog = loggedText();
-    expect(actualLog).toBe(`Translated 1 of 2 posts in 1 batches, ${INPUT_ELAPSED_MS} ms`);
+    expect(actualLog).toBe(
+      `Translated 1 of 2 posts in 1 batches, ${INPUT_TRANSLATION_MODEL}, ` +
+        `tokens in=0 out=0 reasoning=0, ${INPUT_ELAPSED_MS} ms`,
+    );
     expect(actualLog).not.toContain(SECRET_MARKER);
     expect(actualLog).not.toContain('перевод');
   });
@@ -478,5 +548,192 @@ describe('TranslationService', () => {
     // Assert
     expect(actual.untranslatedCount).toBe(2);
     expect(loggedText()).not.toContain(SECRET_MARKER);
+  });
+
+  describe('translateTheses', () => {
+    const THESIS_MARKER = 'SECRET-THESIS-BODY';
+
+    function buildTopic(
+      refs: string[],
+      isFallback: boolean,
+      thesis = `fake thesis ${refs.join(',')} ${THESIS_MARKER}`,
+    ): DigestTopic {
+      return { thesis, viewpoints: [], refs, isFallback };
+    }
+
+    it('sends only fallback theses, addressed by their single ref, in one request', async () => {
+      // Arrange
+      mockCompleteJson.mockImplementation(answerAll());
+      const inputTopics = [
+        buildTopic(['p1', 'p2'], false),
+        buildTopic(['p3'], true),
+        buildTopic(['p4'], true),
+      ];
+
+      // Act
+      await service.translateTheses(inputTopics);
+
+      // Assert
+      expect(mockCompleteJson).toHaveBeenCalledTimes(1);
+      const [actualRequest] = mockCompleteJson.mock.calls[0];
+      expect(actualRequest.user).toBe(
+        `[p3] ${inputTopics[1].thesis}\n\n[p4] ${inputTopics[2].thesis}`,
+      );
+      expect(actualRequest.model).toBe(INPUT_TRANSLATION_MODEL);
+      expect(actualRequest.reasoningEffort).toBe(mockConfig.grokTranslationReasoningEffort);
+      expect(actualRequest.meter).toBeInstanceOf(GrokUsageMeter);
+      expect(actualRequest.schemaName).toBe('translations');
+    });
+
+    it('replaces fallback theses and leaves other topics as they were, in order', async () => {
+      // Arrange
+      mockCompleteJson.mockImplementation(answerAll());
+      const inputTopics = [
+        buildTopic(['p1'], false),
+        buildTopic(['p2'], true),
+        buildTopic(['p3', 'p4'], false),
+        buildTopic(['p5'], true),
+      ];
+
+      // Act
+      const actual = await service.translateTheses(inputTopics);
+
+      // Assert
+      expect(actual.untranslatedCount).toBe(0);
+      expect(actual.topics).toEqual([
+        inputTopics[0],
+        { ...inputTopics[1], thesis: translationOf('p2') },
+        inputTopics[2],
+        { ...inputTopics[3], thesis: translationOf('p5') },
+      ]);
+      expect(actual.topics[0]).toBe(inputTopics[0]);
+      expect(inputTopics[1].thesis).toContain(THESIS_MARKER);
+    });
+
+    it('does not translate a non-fallback topic that shares a ref with a fallback one', async () => {
+      // Arrange
+      mockCompleteJson.mockImplementation(answerAll());
+      const inputTopics = [buildTopic(['p1'], false), buildTopic(['p1'], true)];
+
+      // Act
+      const actual = await service.translateTheses(inputTopics);
+
+      // Assert
+      expect(actual.topics[0]).toBe(inputTopics[0]);
+      expect(actual.topics[1].thesis).toBe(translationOf('p1'));
+    });
+
+    it('makes no request and logs nothing when no topic is a fallback', async () => {
+      // Arrange
+      const inputTopics = [buildTopic(['p1'], false), buildTopic(['p2', 'p3'], false)];
+
+      // Act
+      const actual = await service.translateTheses(inputTopics);
+
+      // Assert
+      expect(mockCompleteJson).not.toHaveBeenCalled();
+      expect(logCallCount()).toBe(0);
+      expect(actual).toEqual({ topics: inputTopics, untranslatedCount: 0 });
+    });
+
+    it('makes no request for an empty topic list', async () => {
+      // Act
+      const actual = await service.translateTheses([]);
+
+      // Assert
+      expect(mockCompleteJson).not.toHaveBeenCalled();
+      expect(actual).toEqual({ topics: [], untranslatedCount: 0 });
+    });
+
+    it('skips fallback topics with a blank thesis or no ref', async () => {
+      // Arrange
+      mockCompleteJson.mockImplementation(answerAll());
+      const inputTopics = [
+        buildTopic(['p1'], true, '   '),
+        buildTopic([], true),
+        buildTopic(['p3'], true),
+      ];
+
+      // Act
+      const actual = await service.translateTheses(inputTopics);
+
+      // Assert
+      expect(mockCompleteJson).toHaveBeenCalledTimes(1);
+      expect(requestedRefs(0)).toEqual(['p3']);
+      expect(actual.topics[0]).toBe(inputTopics[0]);
+      expect(actual.topics[1]).toBe(inputTopics[1]);
+      expect(actual.untranslatedCount).toBe(0);
+    });
+
+    it('makes no request when every fallback thesis is blank', async () => {
+      // Arrange
+      const inputTopics = [buildTopic(['p1'], true, ''), buildTopic(['p2'], true, '  ')];
+
+      // Act
+      const actual = await service.translateTheses(inputTopics);
+
+      // Assert
+      expect(mockCompleteJson).not.toHaveBeenCalled();
+      expect(actual.untranslatedCount).toBe(0);
+    });
+
+    it('keeps every thesis and counts each as untranslated when Grok fails', async () => {
+      // Arrange
+      mockCompleteJson.mockRejectedValue(new GrokError('HTTP 503', true));
+      const inputTopics = [
+        buildTopic(['p1'], false),
+        buildTopic(['p2'], true),
+        buildTopic(['p3'], true),
+      ];
+
+      // Act
+      const actual = await service.translateTheses(inputTopics);
+
+      // Assert
+      expect(actual.topics).toEqual(inputTopics);
+      expect(actual.untranslatedCount).toBe(2);
+      expect(loggedText()).not.toContain(THESIS_MARKER);
+    });
+
+    it('asks again for a skipped thesis and counts it when it is still missing', async () => {
+      // Arrange
+      mockCompleteJson.mockImplementation(answerAll(new Set(['p2'])));
+      const inputTopics = [buildTopic(['p1'], true), buildTopic(['p2'], true)];
+
+      // Act
+      const actual = await service.translateTheses(inputTopics);
+
+      // Assert
+      expect(mockCompleteJson).toHaveBeenCalledTimes(1 + TRANSLATION_MISSING_RETRIES);
+      expect(requestedRefs(1)).toEqual(['p2']);
+      expect(actual.topics[0].thesis).toBe(translationOf('p1'));
+      expect(actual.topics[1]).toBe(inputTopics[1]);
+      expect(actual.untranslatedCount).toBe(1);
+    });
+
+    it('logs one line with counts, the translation model and tokens, never thesis text', async () => {
+      // Arrange
+      const inputUsage = { promptTokens: 30, completionTokens: 9, reasoningTokens: 0 };
+      mockCompleteJson.mockImplementation(async (request) => {
+        request.meter?.add(inputUsage);
+        return answerAll(new Set(['p2']))(request);
+      });
+      const inputTopics = [buildTopic(['p1'], true), buildTopic(['p2'], true)];
+      const expectedCalls = 1 + TRANSLATION_MISSING_RETRIES;
+
+      // Act
+      await service.translateTheses(inputTopics);
+
+      // Assert
+      expect(logCallCount()).toBe(1);
+      const actualLog = loggedText();
+      expect(actualLog).toBe(
+        `Translated 1 of 2 fallback theses, ${INPUT_TRANSLATION_MODEL}, ` +
+          `tokens in=${expectedCalls * inputUsage.promptTokens} ` +
+          `out=${expectedCalls * inputUsage.completionTokens} reasoning=0`,
+      );
+      expect(actualLog).not.toContain(THESIS_MARKER);
+      expect(actualLog).not.toContain('перевод');
+    });
   });
 });

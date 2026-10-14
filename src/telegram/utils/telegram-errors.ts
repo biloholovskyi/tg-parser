@@ -14,6 +14,7 @@ import { TooManyRequestsException } from '../../shared/exceptions/too-many-reque
 import {
   AUTH_INPUT_ERRORS,
   CHANNEL_LOOKUP_FAILURE_PREFIXES,
+  CHANNEL_PEER_STALE_ERRORS,
   CHANNEL_UNAVAILABLE_ERRORS,
   CONNECTIVITY_ERRORS,
   INVALID_SESSION_ERRORS,
@@ -32,6 +33,9 @@ export const DIGEST_SESSION_MISSING_MESSAGE = 'No digest session is set, mark on
 export const SESSION_STORAGE_UNAVAILABLE_MESSAGE = 'Session storage is unreachable, retry later';
 
 const FLOOD_WAIT_CODE_PATTERN = /^FLOOD(?:_PREMIUM)?_WAIT_(\d+)$/;
+/** Code GramJS puts on every flood wait; the duration travels separately in `seconds`. */
+const GRAMJS_FLOOD_CODE = 'FLOOD';
+const FLOOD_WAIT_DESCRIPTION_PREFIX = 'FLOOD_WAIT_';
 
 /**
  * The exact MTProto error code of an RPC error, or undefined for any other failure.
@@ -58,6 +62,10 @@ function isOneOf(code: string | undefined, codes: readonly string[]): boolean {
  */
 export function describeError(error: unknown): string {
   const code = rpcCodeOf(error);
+  const seconds = (error as { seconds?: unknown } | null)?.seconds;
+  if (code === GRAMJS_FLOOD_CODE && typeof seconds === 'number') {
+    return `${FLOOD_WAIT_DESCRIPTION_PREFIX}${seconds}`;
+  }
   if (code) {
     return code;
   }
@@ -108,6 +116,15 @@ export function isChannelUnavailableError(error: unknown): boolean {
     (message !== undefined &&
       CHANNEL_LOOKUP_FAILURE_PREFIXES.some((prefix) => message.startsWith(prefix)))
   );
+}
+
+/**
+ * True when a read through a cached channel peer failed in a way a fresh username lookup may fix:
+ * the cached id or access hash is stale, or the channel looks gone for this account.
+ */
+export function isStalePeerError(error: unknown): boolean {
+  const code = rpcCodeOf(error);
+  return isOneOf(code, CHANNEL_PEER_STALE_ERRORS) || isOneOf(code, CHANNEL_UNAVAILABLE_ERRORS);
 }
 
 /** Caller-facing message for a wrong auth input, or undefined when the error is not one. */

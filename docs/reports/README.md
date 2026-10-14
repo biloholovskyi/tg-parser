@@ -8,6 +8,7 @@
 
 | Дата | Компонент | Версия | Отчёт |
 |------|-----------|--------|-------|
+| 2026-10-14 | block-12-digest-cost-flood | 1.6.0 | [block-12-digest-cost-flood-1.6.0-2026-10-14.md](block-12-digest-cost-flood-1.6.0-2026-10-14.md) |
 | 2026-10-13 | block-11-alerts | 1.5.1 | [block-11-alerts-1.5.1-2026-10-13.md](block-11-alerts-1.5.1-2026-10-13.md) |
 | 2026-09-26 | block-10-daily-digest | 1.5.0 | [block-10-daily-digest-1.5.0-2026-09-26.md](block-10-daily-digest-1.5.0-2026-09-26.md) |
 | 2026-09-24 | block-08-09-refactor-strictness-storage | 1.4.1 | [block-08-09-refactor-strictness-storage-1.4.1-2026-09-24.md](block-08-09-refactor-strictness-storage-1.4.1-2026-09-24.md) |

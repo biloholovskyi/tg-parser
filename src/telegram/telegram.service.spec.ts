@@ -36,6 +36,7 @@ import {
   TIMEOUT_SUFFIX,
 } from './constants';
 import { AuthService } from './auth.service';
+import { ChannelPeerCache } from './channel-peer-cache';
 import { ChannelService } from './channel.service';
 import { SessionRepository } from './session-repository';
 import { SessionStore } from './session-store';
@@ -140,10 +141,17 @@ jest.mock('telegram/tl', () => {
       Object.assign(this, fields);
     }
   }
+  /** A real class so the `instanceof` check in ChannelService works; plain objects are not cached. */
+  class MockInputPeerChannel {
+    constructor(fields: object) {
+      Object.assign(this, fields);
+    }
+  }
   return {
     Api: {
       auth: { SignIn: MockRequest, CheckPassword: MockRequest, Authorization: MockAuthorization },
       User: MockUser,
+      InputPeerChannel: MockInputPeerChannel,
       account: { GetPassword: MockRequest },
       users: { GetUsers: MockRequest },
       InputUserSelf: MockRequest,
@@ -351,7 +359,7 @@ function buildService(
   const alertService = alerts as unknown as AlertService;
   const sessions = new SessionStore(factory, repository, alertService);
   const auth = new AuthService(factory, sessions, alertService);
-  const channels = new ChannelService(sessions, alertService);
+  const channels = new ChannelService(sessions, new ChannelPeerCache(null), alertService);
   return {
     service: new TelegramService(auth, channels, sessions, repository, alertService),
     sessions,
@@ -1419,6 +1427,28 @@ describe('TelegramService', () => {
       );
       expect(loggerSpies.error).not.toHaveBeenCalled();
       expect(loggedText(loggerSpies)).not.toContain(mockFakeSessionString);
+    });
+
+    it('logs a GramJS-shaped flood wait (FLOOD with seconds) as 429 with the wait duration', async () => {
+      // Arrange
+      const inputFloodError = Object.assign(new Error('fake A wait is required'), {
+        errorMessage: 'FLOOD',
+        seconds: INPUT_FLOOD_SECONDS,
+      });
+      mockClient.getMessages.mockRejectedValue(inputFloodError);
+      const expectedLine = `Posts: @${inputChannel} failed: ${HttpStatus.TOO_MANY_REQUESTS} (FLOOD_WAIT_${INPUT_FLOOD_SECONDS})`;
+
+      // Act
+      const actualResult = service.getChannelPosts(inputChannel, mockFakeSessionString);
+
+      // Assert
+      await expect(actualResult).rejects.toBeInstanceOf(TooManyRequestsException);
+      expect(countLogLines(loggerSpies)).toBe(1);
+      expect(loggerSpies.warn).toHaveBeenCalledWith(expectedLine);
+      expect(alerts.warning).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ error: `FLOOD_WAIT_${INPUT_FLOOD_SECONDS}` }),
+      );
     });
 
     it.each([

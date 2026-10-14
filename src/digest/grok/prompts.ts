@@ -15,7 +15,8 @@ export const TRANSLATION_SYSTEM_PROMPT = [
 
 /** Rules of the summary; the same rules apply to the follow-up for missed posts. */
 const SUMMARY_RULES = [
-  'Write in Russian.',
+  'Posts may be in any language. Write every thesis and every viewpoint claim in Russian.',
+  'Keep names, numbers, dates and quotes exactly as the posts give them; transliterate names consistently.',
   'Group posts by topic, not by channel: posts from any channels about the same event or subject form one topic.',
   'Each topic has a thesis: one short, dry sentence stating what was reported.',
   'No evaluations, emotions, conclusions, predictions or opinions of your own.',

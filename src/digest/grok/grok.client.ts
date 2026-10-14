@@ -1,7 +1,7 @@
 import { HttpStatus, Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Agent, fetch } from 'undici';
 import type { Response } from 'undici';
-import type { DigestConfig } from '../../config/digest.config';
+import type { DigestConfig, GrokReasoningEffort } from '../../config/digest.config';
 import {
   DIGEST_CONFIG,
   GROK_CALL_TIMEOUT_MS,
@@ -10,6 +10,8 @@ import {
   GROK_RETRY_BASE_DELAY_MS,
   GROK_SUMMARY_TIMEOUT_MS,
 } from '../constants';
+import { readGrokUsage } from './grok-usage';
+import type { GrokUsageMeter } from './grok-usage';
 
 /** One structured request: the model must answer with JSON matching `schema`. */
 export interface GrokJsonRequest<T> {
@@ -25,6 +27,12 @@ export interface GrokJsonRequest<T> {
   maxRetries?: number;
   /** False for a long request: a timed-out attempt is not sent again. True by default. */
   isTimeoutRetryable?: boolean;
+  /** Model of this request, GROK_MODEL by default. */
+  model?: string;
+  /** Reasoning level of this request, GROK_REASONING_EFFORT by default. */
+  reasoningEffort?: GrokReasoningEffort;
+  /** Collects the token usage of every answered attempt. */
+  meter?: GrokUsageMeter;
 }
 
 /** A failed Grok call; the message carries a status or a reason, never the key or the prompt. */
@@ -100,10 +108,10 @@ export class GrokClient implements OnModuleDestroy {
   }
 
   private buildBody<T>(request: GrokJsonRequest<T>): Record<string, unknown> {
-    const { grokReasoningEffort } = this.config;
+    const reasoningEffort = request.reasoningEffort ?? this.config.grokReasoningEffort;
     return {
-      model: this.config.grokModel,
-      ...(grokReasoningEffort === 'off' ? {} : { reasoning_effort: grokReasoningEffort }),
+      model: request.model ?? this.config.grokModel,
+      ...(reasoningEffort === 'off' ? {} : { reasoning_effort: reasoningEffort }),
       stream: false,
       messages: [
         { role: 'system', content: request.system },
@@ -124,6 +132,7 @@ async function parseAnswer<T>(response: Response, request: GrokJsonRequest<T>): 
   const body = (await response.json()) as {
     choices?: Array<{ message?: { content?: unknown } }>;
   };
+  request.meter?.add(readGrokUsage(body));
   const content = body.choices?.[0]?.message?.content;
   if (typeof content !== 'string') {
     throw new GrokError('answer has no content', true);

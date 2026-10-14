@@ -1,53 +1,95 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import type { DigestConfig } from '../config/digest.config';
 import {
+  DIGEST_CONFIG,
   DIGEST_POST_MAX_CHARS,
   GROK_TRANSLATE_BATCH_CHARS,
   TRANSLATION_BUDGET_MS,
   TRANSLATION_MISSING_RETRIES,
 } from './constants';
 import { GrokClient } from './grok/grok.client';
+import { GrokUsageMeter } from './grok/grok-usage';
 import { TRANSLATION_SYSTEM_PROMPT } from './grok/prompts';
 import { TRANSLATION_SCHEMA, isTranslationAnswer } from './grok/schemas';
 import type { DigestPost } from './interfaces/digest-post.interface';
-import type { TranslatedPost, TranslationResult } from './interfaces/digest-topic.interface';
+import type {
+  DigestTopic,
+  ThesisTranslationResult,
+  TranslatedPost,
+  TranslationResult,
+} from './interfaces/digest-topic.interface';
 import { batchBySize, truncateText } from './utils/text';
 
+/** One text to translate, addressed by its reference. */
+interface TextItem {
+  ref: string;
+  text: string;
+}
+
 /**
- * Translates post texts into Russian in batches, one request at a time. Every reference is
- * checked; a post the model skipped is asked for again, then kept in its original language.
- * The first batch Grok fails after its retries, or TRANSLATION_BUDGET_MS, ends the translation:
- * the remaining posts keep their original text instead of piling up doomed requests.
+ * Translates texts into Russian with the translation model (GROK_TRANSLATION_MODEL), in batches,
+ * one request at a time. Every reference is checked; a text the model skipped is asked for again,
+ * then kept in its original language. The first batch Grok fails after its retries, or
+ * TRANSLATION_BUDGET_MS, ends the translation: the rest keeps the original text.
  */
 @Injectable()
 export class TranslationService {
   private readonly logger = new Logger(TranslationService.name);
 
-  constructor(private readonly grok: GrokClient) {}
+  constructor(
+    private readonly grok: GrokClient,
+    @Inject(DIGEST_CONFIG) private readonly config: DigestConfig,
+  ) {}
 
+  /** Every post with text, for DIGEST_TRANSLATION=on. */
   async translate(posts: readonly DigestPost[]): Promise<TranslationResult> {
     const startedAt = Date.now();
-    const withText = posts.filter((post) => post.hasText);
-    const batches = batchBySize(
-      withText,
-      (post) => inputOf(post).length,
-      GROK_TRANSLATE_BATCH_CHARS,
+    const items = posts.filter((post) => post.hasText).map(postItemOf);
+    const meter = new GrokUsageMeter();
+    const { translations, batchCount } = await this.translateItems(items, meter);
+    const translated = posts.map((post) => toTranslatedPost(post, translations));
+    const untranslatedCount = items.length - translations.size;
+    this.logger.log(
+      `Translated ${translations.size} of ${items.length} posts in ${batchCount} batches, ` +
+        `${this.config.grokTranslationModel}, ${meter.describe()}, ${Date.now() - startedAt} ms`,
     );
+    return { posts: translated, untranslatedCount };
+  }
+
+  /**
+   * The theses of fallback blocks, which are cut from the original posts when the summary read
+   * originals (DIGEST_TRANSLATION=off). No request at all when there is no fallback block.
+   */
+  async translateTheses(topics: readonly DigestTopic[]): Promise<ThesisTranslationResult> {
+    const items = topics.filter(isTranslatableFallback).map(thesisItemOf);
+    if (items.length === 0) {
+      return { topics: [...topics], untranslatedCount: 0 };
+    }
+    const meter = new GrokUsageMeter();
+    const { translations } = await this.translateItems(items, meter);
+    this.logger.log(
+      `Translated ${translations.size} of ${items.length} fallback theses, ` +
+        `${this.config.grokTranslationModel}, ${meter.describe()}`,
+    );
+    return {
+      topics: topics.map((topic) => withTranslatedThesis(topic, translations)),
+      untranslatedCount: items.length - translations.size,
+    };
+  }
+
+  private async translateItems(
+    items: TextItem[],
+    meter: GrokUsageMeter,
+  ): Promise<{ translations: Map<string, string>; batchCount: number }> {
+    const batches = batchBySize(items, (item) => inputOf(item).length, GROK_TRANSLATE_BATCH_CHARS);
     const translations = new Map<string, string>();
-    const deadline = startedAt + TRANSLATION_BUDGET_MS;
+    const deadline = Date.now() + TRANSLATION_BUDGET_MS;
     for (const batch of batches) {
-      if (Date.now() >= deadline || !(await this.translateBatch(batch, translations))) {
+      if (Date.now() >= deadline || !(await this.translateBatch(batch, translations, meter))) {
         break;
       }
     }
-    const translated = posts.map((post) => toTranslatedPost(post, translations));
-    const untranslatedCount = translated.filter(
-      (post) => post.hasText && post.isUntranslated,
-    ).length;
-    this.logger.log(
-      `Translated ${withText.length - untranslatedCount} of ${withText.length} posts ` +
-        `in ${batches.length} batches, ${Date.now() - startedAt} ms`,
-    );
-    return { posts: translated, untranslatedCount };
+    return { translations, batchCount: batches.length };
   }
 
   /**
@@ -55,34 +97,39 @@ export class TranslationService {
    * its original text and the caller stops sending further batches.
    */
   private async translateBatch(
-    batch: DigestPost[],
+    batch: TextItem[],
     translations: Map<string, string>,
+    meter: GrokUsageMeter,
   ): Promise<boolean> {
     let pending = batch;
     for (let attempt = 0; attempt <= TRANSLATION_MISSING_RETRIES && pending.length > 0; attempt++) {
       try {
-        await this.requestTranslations(pending, translations);
+        await this.requestTranslations(pending, translations, meter);
       } catch {
-        // GrokClient has logged the failure; these posts keep their original text.
+        // GrokClient has logged the failure; these texts keep their original language.
         return false;
       }
-      pending = pending.filter((post) => !translations.has(post.ref));
+      pending = pending.filter((item) => !translations.has(item.ref));
     }
     return true;
   }
 
   private async requestTranslations(
-    posts: DigestPost[],
+    items: TextItem[],
     translations: Map<string, string>,
+    meter: GrokUsageMeter,
   ): Promise<void> {
     const answer = await this.grok.completeJson({
       system: TRANSLATION_SYSTEM_PROMPT,
-      user: posts.map(inputOf).join('\n\n'),
+      user: items.map(inputOf).join('\n\n'),
       schemaName: 'translations',
       schema: TRANSLATION_SCHEMA,
       isValid: isTranslationAnswer,
+      model: this.config.grokTranslationModel,
+      reasoningEffort: this.config.grokTranslationReasoningEffort,
+      meter,
     });
-    const requested = new Set(posts.map((post) => post.ref));
+    const requested = new Set(items.map((item) => item.ref));
     for (const { ref, text } of answer.translations) {
       if (requested.has(ref) && text.trim()) {
         translations.set(ref, text.trim());
@@ -91,8 +138,21 @@ export class TranslationService {
   }
 }
 
-function inputOf(post: DigestPost): string {
-  return `[${post.ref}] ${truncateText(post.text, DIGEST_POST_MAX_CHARS)}`;
+function postItemOf(post: DigestPost): TextItem {
+  return { ref: post.ref, text: truncateText(post.text, DIGEST_POST_MAX_CHARS) };
+}
+
+/** A fallback block holds exactly one post; its reference addresses the thesis. */
+function isTranslatableFallback(topic: DigestTopic): boolean {
+  return topic.isFallback && topic.refs.length > 0 && topic.thesis.trim().length > 0;
+}
+
+function thesisItemOf(topic: DigestTopic): TextItem {
+  return { ref: topic.refs[0], text: topic.thesis };
+}
+
+function inputOf(item: TextItem): string {
+  return `[${item.ref}] ${item.text}`;
 }
 
 function toTranslatedPost(post: DigestPost, translations: Map<string, string>): TranslatedPost {
@@ -102,4 +162,9 @@ function toTranslatedPost(post: DigestPost, translations: Map<string, string>): 
     translated: translation ?? post.text,
     isUntranslated: post.hasText && translation === undefined,
   };
+}
+
+function withTranslatedThesis(topic: DigestTopic, translations: Map<string, string>): DigestTopic {
+  const translation = isTranslatableFallback(topic) ? translations.get(topic.refs[0]) : undefined;
+  return translation === undefined ? topic : { ...topic, thesis: translation };
 }

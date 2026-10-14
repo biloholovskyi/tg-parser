@@ -32,7 +32,7 @@ export const GROK_RETRY_BASE_DELAY_MS = 2000;
 export const GROK_TRANSLATE_BATCH_CHARS = 12_000;
 
 /** A post longer than this is cut before translation. */
-export const DIGEST_POST_MAX_CHARS = 1500;
+export const DIGEST_POST_MAX_CHARS = 1200;
 
 /** A translated post longer than this is cut before summarizing; a thesis needs the gist only. */
 export const SUMMARY_POST_MAX_CHARS = 800;
@@ -75,3 +75,12 @@ export const BOT_RETRY_BASE_DELAY_MS = 1000;
 
 /** A `retry_after` longer than this is not waited for; the run reports the failure instead. */
 export const BOT_MAX_RETRY_AFTER_S = 60;
+
+/** A Telegram flood wait up to this long is sat out during collection; a longer one ends the run. */
+export const DIGEST_FLOOD_WAIT_MAX_S = 30 * 60;
+
+/** Upper bound on all flood waits of one run together. */
+export const DIGEST_FLOOD_WAIT_TOTAL_MAX_S = 60 * 60;
+
+/** Added to every flood wait, so the retry does not land a moment before Telegram allows it. */
+export const DIGEST_FLOOD_WAIT_MARGIN_S = 5;

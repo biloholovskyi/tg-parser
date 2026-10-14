@@ -1,8 +1,8 @@
 # tg-parser
 
-NestJS 10 service that wraps GramJS (a Telegram MTProto client) to parse public and private Telegram channels through a personal user account, not a bot. REST API, TypeScript 5 on Node 20+. No database; issued sessions are persisted, encrypted, in Redis. A daily digest of configured channels is translated and summarized through Grok and sent to a Telegram bot. Critical failures and every successful login are reported to the external alert service TechAdminServer (`POST /alerts`; the request contract is summarized in `docs/plans/block-11-alerts/research.md`).
+NestJS 10 service that wraps GramJS (a Telegram MTProto client) to parse public and private Telegram channels through a personal user account, not a bot. REST API, TypeScript 5 on Node 20+. No database; issued sessions are persisted, encrypted, in Redis. A daily digest of configured channels is summarized through Grok (from the original posts by default, with an optional cheaper translation model) and sent to a Telegram bot. Critical failures and every successful login are reported to the external alert service TechAdminServer (`POST /alerts`; the request contract is summarized in `docs/plans/block-11-alerts/research.md`).
 
-Session model: issued sessions are stored in Redis, encrypted with AES-256-GCM and keyed by their SHA-256, decided in [adr-session-redis.md](docs/plans/block-10-daily-digest/adr-session-redis.md). A session survives a restart or deploy; without `REDIS_URL` or `SESSION_ENCRYPTION_KEY` the service falls back to process memory only. Pending logins always live in memory. The service itself writes nothing to disk; Redis keeps its encrypted records on its own volume. Any other persistence is a new user decision, not a code change.
+Session model: issued sessions are stored in Redis, encrypted with AES-256-GCM and keyed by their SHA-256, decided in [adr-session-redis.md](docs/plans/block-10-daily-digest/adr-session-redis.md). A session survives a restart or deploy; without `REDIS_URL` or `SESSION_ENCRYPTION_KEY` the service falls back to process memory only. Pending logins always live in memory. Resolved channel peers (channel id and access hash, no session) are cached in Redis under `tg:peer:{sha256(session)}:{username}` for 30 days, so a channel is looked up by username once a month instead of on every read; without Redis they live in a bounded in-memory map, decided in [adr-channel-peer-cache.md](docs/plans/block-12-digest-cost-flood/adr-channel-peer-cache.md). The service itself writes nothing to disk; Redis keeps its records on its own volume. Any other persistence is a new user decision, not a code change.
 
 ## Source of Truth
 
@@ -75,12 +75,15 @@ Key source files:
 - [src/shared/utils/process-handlers.ts](src/shared/utils/process-handlers.ts) — process handlers and the single deliberate shutdown path
 - [src/telegram/interfaces/message.interface.ts](src/telegram/interfaces/message.interface.ts) — `TelegramPost`, `TelegramMedia` and `GetPostsResponse` types
 - [src/telegram/session-repository.ts](src/telegram/session-repository.ts) — encrypted session records and the digest session mark in Redis
+- [src/telegram/channel-peer-cache.ts](src/telegram/channel-peer-cache.ts) — cached channel peers per account, Redis or a bounded map; a stale entry falls back to one username lookup
 - [src/redis/redis.module.ts](src/redis/redis.module.ts) and [src/redis/redis-client.ts](src/redis/redis-client.ts) — the only Redis client, explicit bounds, closed on shutdown
 - [src/shared/utils/secret-cipher.ts](src/shared/utils/secret-cipher.ts) — AES-256-GCM and SHA-256 helpers
 - [src/config/redis.config.ts](src/config/redis.config.ts) and [src/config/digest.config.ts](src/config/digest.config.ts) — Redis, encryption key and digest settings
 - [src/digest/digest.service.ts](src/digest/digest.service.ts) — digest run: collect, translate, summarize, format, send; one run at a time
 - [src/digest/digest.scheduler.ts](src/digest/digest.scheduler.ts) — daily job from `DIGEST_CRON` / `DIGEST_TIMEZONE`
-- [src/digest/grok/grok.client.ts](src/digest/grok/grok.client.ts) — xAI chat completions with a JSON schema answer, timeout and bounded retries
+- [src/digest/grok/grok.client.ts](src/digest/grok/grok.client.ts) — xAI chat completions with a JSON schema answer, per-request model and reasoning effort, token usage meter, timeout and bounded retries
+- [src/digest/post-collector.ts](src/digest/post-collector.ts) — reads digest channels one by one; sits out a flood wait within `DIGEST_FLOOD_WAIT_MAX_S` and resumes the same channel
+- [src/digest/translation.service.ts](src/digest/translation.service.ts) — translation with `GROK_TRANSLATION_MODEL`: every post when `DIGEST_TRANSLATION=on`, only fallback theses when `off`
 - [src/digest/summary.service.ts](src/digest/summary.service.ts) — topics with guaranteed coverage of every post
 - [src/digest/bot-notifier.ts](src/digest/bot-notifier.ts) — Bot API `sendMessage`, sequential, honors `retry_after`
 - [src/digest/utils/digest-formatter.ts](src/digest/utils/digest-formatter.ts) — Telegram HTML rendering and splitting at `BOT_MESSAGE_MAX_CHARS`
@@ -191,6 +194,9 @@ Railway via [railway.toml](railway.toml): RAILPACK builder, `npm run start:prod`
 | `GROK_API_KEY` | xAI API key for translation and summary |
 | `GROK_MODEL` | xAI model, default `grok-4.6` |
 | `GROK_REASONING_EFFORT` | `low` (default), `medium`, `high`, `xhigh`, or `off` to omit the parameter for non-reasoning models; an unknown value falls back to `low` with a warning |
+| `DIGEST_TRANSLATION` | `off` (default): the summary reads the original posts and writes Russian theses, only fallback theses are translated; `on`: every post is translated before the summary |
+| `GROK_TRANSLATION_MODEL` | xAI model for translation, default `grok-4.20-0309-non-reasoning`; set `grok-4.6` to translate with the main model |
+| `GROK_TRANSLATION_REASONING_EFFORT` | Reasoning effort of translation requests, same values as `GROK_REASONING_EFFORT`, default `off` |
 | `TELEGRAM_BOT_TOKEN` | Token of the bot that delivers the digest |
 | `TELEGRAM_BOT_CHAT_ID` | Chat the bot sends the digest to |
 | `ALERTS_URL` | Base address of the alert service (TechAdminServer); unset or invalid disables alerts |
