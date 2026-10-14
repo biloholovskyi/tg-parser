@@ -10,6 +10,7 @@ import {
 } from '../constants';
 import { GrokClient, GrokError } from './grok.client';
 import type { GrokJsonRequest } from './grok.client';
+import { GrokUsageMeter } from './grok-usage';
 
 jest.mock('undici', () => ({ fetch: jest.fn(), Agent: jest.fn() }));
 
@@ -77,6 +78,9 @@ const mockConfig: DigestConfig = {
   grokApiKey: inputApiKey,
   grokModel: inputModel,
   grokReasoningEffort: 'low',
+  translationMode: 'off',
+  grokTranslationModel: 'fake-translation-model',
+  grokTranslationReasoningEffort: 'off',
   botToken: 'fake-bot-token',
   botChatId: 'fake-chat-id',
   isConfigured: true,
@@ -921,6 +925,219 @@ describe('GrokClient', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(jest.getTimerCount()).toBe(0);
       expect(((await outcome) as GrokError).isRetryable).toBe(false);
+    });
+  });
+
+  describe('per-request model and reasoning effort', () => {
+    const inputRequestModel = 'fake-translation-model';
+
+    function sentBody(callIndex = 0): Record<string, unknown> {
+      return JSON.parse(String(fetchSpy.mock.calls[callIndex][1]?.body)) as Record<string, unknown>;
+    }
+
+    it('sends the request model and effort instead of the configured ones', async () => {
+      // Arrange
+      fetchSpy.mockResolvedValueOnce(contentResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      await settle(buildRequest({ model: inputRequestModel, reasoningEffort: 'high' }));
+
+      // Assert
+      const actualBody = sentBody();
+      expect(actualBody.model).toBe(inputRequestModel);
+      expect(actualBody.reasoning_effort).toBe('high');
+    });
+
+    it('omits reasoning_effort when the request effort is off and the configured one is not', async () => {
+      // Arrange
+      fetchSpy.mockResolvedValueOnce(contentResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      await settle(buildRequest({ model: inputRequestModel, reasoningEffort: 'off' }));
+
+      // Assert
+      const actualBody = sentBody();
+      expect(mockConfig.grokReasoningEffort).toBe('low');
+      expect(actualBody).not.toHaveProperty('reasoning_effort');
+      expect(actualBody.model).toBe(inputRequestModel);
+    });
+
+    it('sends the request effort when the configured effort is off', async () => {
+      // Arrange
+      client = new GrokClient({ ...mockConfig, grokReasoningEffort: 'off' });
+      fetchSpy.mockResolvedValueOnce(contentResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      await settle(buildRequest({ reasoningEffort: 'medium' }));
+
+      // Assert
+      expect(sentBody().reasoning_effort).toBe('medium');
+    });
+
+    it('uses the configured model and effort when the request sets neither', async () => {
+      // Arrange
+      fetchSpy.mockResolvedValueOnce(contentResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      await settle();
+
+      // Assert
+      const actualBody = sentBody();
+      expect(actualBody.model).toBe(mockConfig.grokModel);
+      expect(actualBody.reasoning_effort).toBe(mockConfig.grokReasoningEffort);
+      expect(actualBody.model).not.toBe(mockConfig.grokTranslationModel);
+    });
+
+    it('overrides the model alone and keeps the configured effort', async () => {
+      // Arrange
+      fetchSpy.mockResolvedValueOnce(contentResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      await settle(buildRequest({ model: inputRequestModel }));
+
+      // Assert
+      const actualBody = sentBody();
+      expect(actualBody.model).toBe(inputRequestModel);
+      expect(actualBody.reasoning_effort).toBe(mockConfig.grokReasoningEffort);
+    });
+
+    it('keeps the request model on every retried attempt', async () => {
+      // Arrange
+      fetchSpy
+        .mockResolvedValueOnce(jsonResponse({}, HTTP_SERVER_ERROR))
+        .mockResolvedValueOnce(contentResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      await settle(buildRequest({ model: inputRequestModel, reasoningEffort: 'off' }));
+
+      // Assert
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(sentBody(1).model).toBe(inputRequestModel);
+      expect(sentBody(1)).not.toHaveProperty('reasoning_effort');
+    });
+  });
+
+  describe('usage meter', () => {
+    const inputUsage = {
+      prompt_tokens: 100,
+      completion_tokens: 20,
+      completion_tokens_details: { reasoning_tokens: 7 },
+    };
+
+    function usageResponse(content: unknown): FakeResponse {
+      return jsonResponse({ choices: [{ message: { content } }], usage: inputUsage });
+    }
+
+    it('adds the usage of a successful answer once', async () => {
+      // Arrange
+      const mockMeter = new GrokUsageMeter();
+      fetchSpy.mockResolvedValueOnce(usageResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      const actual = await settle(buildRequest({ meter: mockMeter }));
+
+      // Assert
+      expect(actual.value).toEqual({ value: 'ok' });
+      expect(mockMeter.usage).toEqual({
+        promptTokens: inputUsage.prompt_tokens,
+        completionTokens: inputUsage.completion_tokens,
+        reasoningTokens: inputUsage.completion_tokens_details.reasoning_tokens,
+      });
+    });
+
+    it.each([
+      ['a schema mismatch', JSON.stringify({ wrong: true })],
+      ['invalid JSON', 'not json'],
+      ['missing content', null],
+    ])(
+      'counts an answered attempt rejected for %s and the retry that follows',
+      async (_label, inputContent) => {
+        // Arrange
+        const mockMeter = new GrokUsageMeter();
+        fetchSpy
+          .mockResolvedValueOnce(usageResponse(inputContent))
+          .mockResolvedValueOnce(usageResponse(JSON.stringify({ value: 'ok' })));
+
+        // Act
+        const actual = await settle(buildRequest({ meter: mockMeter }));
+
+        // Assert
+        expect(actual.value).toEqual({ value: 'ok' });
+        expect(fetchSpy).toHaveBeenCalledTimes(2);
+        expect(mockMeter.usage).toEqual({
+          promptTokens: 2 * inputUsage.prompt_tokens,
+          completionTokens: 2 * inputUsage.completion_tokens,
+          reasoningTokens: 2 * inputUsage.completion_tokens_details.reasoning_tokens,
+        });
+      },
+    );
+
+    it('counts every answered attempt when all of them are rejected', async () => {
+      // Arrange
+      const mockMeter = new GrokUsageMeter();
+      fetchSpy.mockImplementation(async () => usageResponse(JSON.stringify({ wrong: true })));
+
+      // Act
+      const actual = await settle(buildRequest({ meter: mockMeter }));
+
+      // Assert
+      expect(actual.error).toBeInstanceOf(GrokError);
+      expect(fetchSpy).toHaveBeenCalledTimes(TOTAL_ATTEMPTS);
+      expect(mockMeter.usage.promptTokens).toBe(TOTAL_ATTEMPTS * inputUsage.prompt_tokens);
+    });
+
+    it('adds nothing for an HTTP error response, even one with a usage field', async () => {
+      // Arrange
+      const mockMeter = new GrokUsageMeter();
+      fetchSpy
+        .mockResolvedValueOnce(jsonResponse({ usage: inputUsage }, HTTP_SERVER_ERROR))
+        .mockResolvedValueOnce(usageResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      await settle(buildRequest({ meter: mockMeter }));
+
+      // Assert
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(mockMeter.usage.promptTokens).toBe(inputUsage.prompt_tokens);
+    });
+
+    it('adds nothing when every attempt fails with an HTTP error', async () => {
+      // Arrange
+      const mockMeter = new GrokUsageMeter();
+      fetchSpy.mockImplementation(async () =>
+        jsonResponse({ usage: inputUsage }, HTTP_BAD_REQUEST),
+      );
+
+      // Act
+      const actual = await settle(buildRequest({ meter: mockMeter }));
+
+      // Assert
+      expect(actual.error).toBeInstanceOf(GrokError);
+      expect(mockMeter.usage).toEqual({ promptTokens: 0, completionTokens: 0, reasoningTokens: 0 });
+    });
+
+    it('adds zeros for an answer without usage', async () => {
+      // Arrange
+      const mockMeter = new GrokUsageMeter();
+      fetchSpy.mockResolvedValueOnce(contentResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      await settle(buildRequest({ meter: mockMeter }));
+
+      // Assert
+      expect(mockMeter.usage).toEqual({ promptTokens: 0, completionTokens: 0, reasoningTokens: 0 });
+    });
+
+    it('answers normally without a meter', async () => {
+      // Arrange
+      fetchSpy.mockResolvedValueOnce(usageResponse(JSON.stringify({ value: 'ok' })));
+
+      // Act
+      const actual = await settle(buildRequest());
+
+      // Assert
+      expect(actual.error).toBeUndefined();
+      expect(actual.value).toEqual({ value: 'ok' });
     });
   });
 });

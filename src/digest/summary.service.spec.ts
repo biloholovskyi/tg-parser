@@ -8,6 +8,7 @@ import {
 } from './constants';
 import { GrokClient, GrokError } from './grok/grok.client';
 import type { GrokJsonRequest } from './grok/grok.client';
+import { GrokUsageMeter } from './grok/grok-usage';
 import { SUMMARY_COVERAGE_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT } from './grok/prompts';
 import { COVERAGE_SCHEMA, SUMMARY_SCHEMA, isCoverageAnswer, isSummaryAnswer } from './grok/schemas';
 import type { CoverageAnswer, SummaryAnswer, TopicAnswer } from './grok/schemas';
@@ -120,6 +121,7 @@ describe('SummaryService', () => {
         timeoutMs: GROK_SUMMARY_TIMEOUT_MS,
         maxRetries: GROK_SUMMARY_MAX_RETRIES,
         isTimeoutRetryable: false,
+        meter: expect.any(GrokUsageMeter),
       });
     });
 
@@ -252,7 +254,9 @@ describe('SummaryService', () => {
         schemaName: 'digest_completion',
         schema: COVERAGE_SCHEMA,
         isValid: isCoverageAnswer,
+        meter: mockCompleteJson.mock.calls[0][0].meter,
       });
+      expect(actualRequest.meter).toBeInstanceOf(GrokUsageMeter);
     });
 
     it('adds refs by 1-based topic number, ignores invalid numbers and appends new topics', async () => {
@@ -451,10 +455,72 @@ describe('SummaryService', () => {
       const actualLog = loggedText();
       expect(actualLog).toBe(
         `Summary: 2 topics from 2 posts, coverage retries=${SUMMARY_COVERAGE_RETRIES}, ` +
-          `fallback=1, ${INPUT_ELAPSED_MS} ms`,
+          `fallback=1, tokens in=0 out=0 reasoning=0, ${INPUT_ELAPSED_MS} ms`,
       );
       expect(actualLog).not.toContain(SECRET_MARKER);
       expect(actualLog).not.toContain(ORIGINAL_MARKER);
+    });
+
+    it('sums the tokens of the summary and every coverage follow-up into one line', async () => {
+      // Arrange
+      const inputUsage = { promptTokens: 10, completionTokens: 3, reasoningTokens: 2 };
+      mockCompleteJson.mockImplementation(async (request) => {
+        request.meter?.add(inputUsage);
+        return request.schemaName === 'digest' ? summary(topic(['p1'])) : coverage([]);
+      });
+
+      // Act
+      await service.summarize([buildPost(1), buildPost(2)]);
+
+      // Assert
+      const expectedCalls = TOTAL_CALLS_WITH_RETRIES;
+      expect(mockCompleteJson).toHaveBeenCalledTimes(expectedCalls);
+      const actualMeters = new Set(mockCompleteJson.mock.calls.map(([request]) => request.meter));
+      expect(actualMeters.size).toBe(1);
+      expect(logCallCount()).toBe(1);
+      expect(loggedText()).toContain(
+        `tokens in=${expectedCalls * inputUsage.promptTokens} ` +
+          `out=${expectedCalls * inputUsage.completionTokens} ` +
+          `reasoning=${expectedCalls * inputUsage.reasoningTokens}`,
+      );
+    });
+
+    it('uses a fresh meter for every summarize call', async () => {
+      // Arrange
+      const inputUsage = { promptTokens: 5, completionTokens: 1, reasoningTokens: 0 };
+      mockCompleteJson.mockImplementation(async (request) => {
+        request.meter?.add(inputUsage);
+        return summary(topic(['p1']));
+      });
+
+      // Act
+      await service.summarize([buildPost(1)]);
+      await service.summarize([buildPost(1)]);
+
+      // Assert
+      const actualLines = loggerSpies.flatMap((spy) =>
+        spy.mock.calls.map((call) => String(call[0])),
+      );
+      expect(actualLines).toHaveLength(2);
+      for (const line of actualLines) {
+        expect(line).toContain('tokens in=5 out=1 reasoning=0');
+      }
+    });
+
+    it('passes no model or reasoning effort, so the main GROK_MODEL is used', async () => {
+      // Arrange
+      mockCompleteJson
+        .mockResolvedValueOnce(summary(topic(['p1'])))
+        .mockResolvedValue(coverage([]));
+
+      // Act
+      await service.summarize([buildPost(1), buildPost(2)]);
+
+      // Assert
+      for (const [actualRequest] of mockCompleteJson.mock.calls) {
+        expect(actualRequest).not.toHaveProperty('model');
+        expect(actualRequest).not.toHaveProperty('reasoningEffort');
+      }
     });
 
     it('never logs post text when a follow-up fails', async () => {

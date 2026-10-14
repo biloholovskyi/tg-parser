@@ -102,3 +102,15 @@ export const SESSION_STORE_KEY_PREFIX = 'tg:session:';
 
 /** Redis key holding the SHA-256 of the session the daily digest reads channels with. */
 export const DIGEST_SESSION_KEY = 'tg:digest-session';
+
+/** Redis key prefix of a cached channel peer; the suffix is `{sha256(session)}:{username}`. */
+export const CHANNEL_PEER_KEY_PREFIX = 'tg:peer:';
+
+/** A cached channel peer unused for this long disappears from Redis; every use extends it. */
+export const CHANNEL_PEER_TTL_S = 30 * 24 * SECONDS_IN_HOUR;
+
+/** Upper bound on channel peers held in memory when Redis is not configured. */
+export const CHANNEL_PEER_CACHE_MAX_ENTRIES = 500;
+
+/** MTProto codes meaning a cached channel id or access hash no longer works for this account. */
+export const CHANNEL_PEER_STALE_ERRORS = ['CHANNEL_INVALID', 'PEER_ID_INVALID'] as const;

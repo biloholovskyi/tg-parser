@@ -26,6 +26,7 @@ MTProto is Telegram's own wire protocol; GramJS speaks it as a user account (not
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` are read only through `src/config/telegram.config.ts`, never inline from `process.env` elsewhere.
 - Never log phone numbers, SMS codes, 2FA passwords, or full message payloads of private channels.
 - An alert to the external alert service is outbound data: the same secrets never go into its message or details. The login alert identifies the account by Telegram user id and username only, plus the `has2fa` and `isPersisted` flags; errors go in through `describeError`, and `src/alerts/alert-sanitizer.ts` strips secret keys and secret-looking values as a second line of defence, not as permission.
+- Channel peers are persisted only by `ChannelPeerCache`, keyed by the SHA-256 of the session; the channel id and access hash are never logged or sent in an alert.
 - A session string is persisted only by `SessionRepository`, only encrypted, and only under a SHA-256 key; no other store, file or cache library holds it without an explicit user decision (`.claude/rules/architecture.md`).
 - The digest reads channels only through `TelegramService.readPostsAsDigestAccount`; the digest session string never leaves `src/telegram/`.
 
@@ -71,6 +72,7 @@ State the deviation, never silently rewrite the rule around it. Resolution proto
 - Message iteration over a channel is paginated by GramJS; keep an explicit upper bound on how many messages a request may walk, expressed as a named constant.
 - Time-window filtering is applied while iterating, so iteration stops as soon as messages fall outside the window — do not fetch the whole history and filter afterwards.
 - Treat flood waits as expected, not exceptional: back off, report, and do not retry in a tight loop.
+- A REST request never sits out a flood wait, it answers 429. Only the background digest waits, within DIGEST_FLOOD_WAIT_MAX_S per wait and DIGEST_FLOOD_WAIT_TOTAL_MAX_S per run, with a log line and an alert per wait (`src/digest/post-collector.ts`).
 - Never run unbounded parallel requests against Telegram with the same account.
 
 ## Configuration

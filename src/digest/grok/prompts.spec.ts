@@ -17,7 +17,6 @@ describe('Grok prompts', () => {
     ['coverage follow-up', SUMMARY_COVERAGE_SYSTEM_PROMPT],
   ])('%s prompt carries every summary rule', (_name, inputPrompt) => {
     // Assert
-    expect(inputPrompt).toMatch(/Write in Russian/);
     expect(inputPrompt).toMatch(/No evaluations/);
     expect(inputPrompt).toMatch(/conclusions/);
     expect(inputPrompt).toMatch(/claim of its channel/);
@@ -26,6 +25,19 @@ describe('Grok prompts', () => {
     expect(inputPrompt).toMatch(/Every reference you receive must appear/);
     expect(inputPrompt).toMatch(/one short, dry sentence/);
     expect(inputPrompt).toMatch(/Use only references from the input/);
+  });
+
+  it.each([
+    ['summary', SUMMARY_SYSTEM_PROMPT],
+    ['coverage follow-up', SUMMARY_COVERAGE_SYSTEM_PROMPT],
+  ])('%s prompt accepts posts in any language and answers in Russian', (_name, inputPrompt) => {
+    // Assert
+    expect(inputPrompt).toMatch(/Posts may be in any language/);
+    expect(inputPrompt).toMatch(/Write every thesis and every viewpoint claim in Russian/);
+    expect(inputPrompt).toMatch(
+      /Keep names, numbers, dates and quotes exactly as the posts give them/,
+    );
+    expect(inputPrompt).toMatch(/transliterate names consistently/);
   });
 
   it('coverage prompt explains adding to a numbered topic or creating a new one', () => {

@@ -7,6 +7,7 @@ import {
   SUMMARY_POST_MAX_CHARS,
 } from './constants';
 import { GrokClient } from './grok/grok.client';
+import { GrokUsageMeter } from './grok/grok-usage';
 import { SUMMARY_COVERAGE_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT } from './grok/prompts';
 import { COVERAGE_SCHEMA, SUMMARY_SCHEMA, isCoverageAnswer, isSummaryAnswer } from './grok/schemas';
 import type { CoverageAnswer, TopicAnswer } from './grok/schemas';
@@ -18,9 +19,18 @@ import type {
 import { dropUnknownRefs, findMissingRefs } from './utils/coverage';
 import { truncateText } from './utils/text';
 
+/** One follow-up for posts the model left out of the topics. */
+interface CoverageRequest {
+  topics: DigestTopic[];
+  posts: TranslatedPost[];
+  missing: string[];
+  meter: GrokUsageMeter;
+}
+
 /**
- * Folds translated posts into topics and guarantees coverage: every post with text ends up in at
- * least one topic, through follow-up requests and, as the last resort, a block of its own.
+ * Folds posts (originals or translations) into topics and guarantees coverage: every post with
+ * text ends up in at least one topic, through follow-up requests and, as the last resort, a block
+ * of its own.
  * A failure of the first request is thrown; the caller decides how to deliver without a summary.
  */
 @Injectable()
@@ -37,24 +47,32 @@ export class SummaryService {
     }
     const refs = withText.map((post) => post.ref);
     const knownRefs = new Set(refs);
-    let topics = dropUnknownRefs(await this.requestSummary(withText), knownRefs);
+    const meter = new GrokUsageMeter();
+    let topics = dropUnknownRefs(await this.requestSummary(withText, meter), knownRefs);
     let retries = 0;
     for (; retries < SUMMARY_COVERAGE_RETRIES; retries++) {
       const missing = findMissingRefs(topics, refs);
       if (missing.length === 0) {
         break;
       }
-      topics = dropUnknownRefs(await this.placeMissing(topics, withText, missing), knownRefs);
+      topics = dropUnknownRefs(
+        await this.placeMissing({ topics, posts: withText, missing, meter }),
+        knownRefs,
+      );
     }
     const fallback = findMissingRefs(topics, refs).map((ref) => fallbackTopic(withText, ref));
     this.logger.log(
       `Summary: ${topics.length + fallback.length} topics from ${withText.length} posts, ` +
-        `coverage retries=${retries}, fallback=${fallback.length}, ${Date.now() - startedAt} ms`,
+        `coverage retries=${retries}, fallback=${fallback.length}, ${meter.describe()}, ` +
+        `${Date.now() - startedAt} ms`,
     );
     return { topics: [...topics, ...fallback], fallbackTopicCount: fallback.length };
   }
 
-  private async requestSummary(posts: TranslatedPost[]): Promise<DigestTopic[]> {
+  private async requestSummary(
+    posts: TranslatedPost[],
+    meter: GrokUsageMeter,
+  ): Promise<DigestTopic[]> {
     const answer = await this.grok.completeJson({
       system: SUMMARY_SYSTEM_PROMPT,
       user: posts.map(summaryInputOf).join('\n\n'),
@@ -64,16 +82,14 @@ export class SummaryService {
       timeoutMs: GROK_SUMMARY_TIMEOUT_MS,
       maxRetries: GROK_SUMMARY_MAX_RETRIES,
       isTimeoutRetryable: false,
+      meter,
     });
     return answer.topics.map(toTopic);
   }
 
   /** Asks where the missing posts belong; a failed follow-up leaves the topics as they are. */
-  private async placeMissing(
-    topics: DigestTopic[],
-    posts: TranslatedPost[],
-    missing: string[],
-  ): Promise<DigestTopic[]> {
+  private async placeMissing(request: CoverageRequest): Promise<DigestTopic[]> {
+    const { topics, posts, missing, meter } = request;
     const missingSet = new Set(missing);
     try {
       const answer = await this.grok.completeJson({
@@ -85,6 +101,7 @@ export class SummaryService {
         schemaName: 'digest_completion',
         schema: COVERAGE_SCHEMA,
         isValid: isCoverageAnswer,
+        meter,
       });
       return applyCoverage(topics, answer);
     } catch {

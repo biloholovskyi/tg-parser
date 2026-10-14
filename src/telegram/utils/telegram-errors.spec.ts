@@ -13,6 +13,7 @@ import { TooManyRequestsException } from '../../shared/exceptions/too-many-reque
 import {
   AUTH_INPUT_ERRORS,
   CHANNEL_LOOKUP_FAILURE_PREFIXES,
+  CHANNEL_PEER_STALE_ERRORS,
   CHANNEL_UNAVAILABLE_ERRORS,
   CONNECTIVITY_ERRORS,
   INVALID_SESSION_ERRORS,
@@ -33,6 +34,7 @@ import {
   isChannelUnavailableError,
   isConnectivityError,
   isInvalidSessionError,
+  isStalePeerError,
   missingConfigException,
   toHttpException,
 } from './telegram-errors';
@@ -681,6 +683,80 @@ describe('describeError', () => {
     // Assert
     expect(actualResult).toBe(expectedResult);
   });
+
+  it('returns FLOOD_WAIT_{seconds} for a GramJS FloodWaitError (errorMessage FLOOD, numeric seconds)', () => {
+    // Arrange
+    const inputError = Object.assign(new Error('fake A wait is required'), {
+      errorMessage: 'FLOOD',
+      seconds: INPUT_FLOOD_SECONDS,
+    });
+
+    // Act
+    const actualResult = describeError(inputError);
+
+    // Assert
+    expect(actualResult).toBe(`FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`);
+  });
+
+  it('returns FLOOD_WAIT_{seconds} for a plain object of the same shape', () => {
+    // Act
+    const actualResult = describeError({ errorMessage: 'FLOOD', seconds: INPUT_FLOOD_SECONDS });
+
+    // Assert
+    expect(actualResult).toBe(`FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`);
+  });
+
+  it('keeps the bare FLOOD code when seconds is not a number', () => {
+    // Act
+    const actualResult = describeError({
+      errorMessage: 'FLOOD',
+      seconds: String(INPUT_FLOOD_SECONDS),
+    });
+
+    // Assert
+    expect(actualResult).toBe('FLOOD');
+  });
+
+  it('ignores a numeric seconds on an error whose code is not FLOOD', () => {
+    // Act
+    const actualResult = describeError({
+      errorMessage: 'CHANNEL_PRIVATE',
+      seconds: INPUT_FLOOD_SECONDS,
+    });
+
+    // Assert
+    expect(actualResult).toBe('CHANNEL_PRIVATE');
+  });
+});
+
+describe('isStalePeerError', () => {
+  it.each([...CHANNEL_PEER_STALE_ERRORS, ...CHANNEL_UNAVAILABLE_ERRORS])(
+    'returns true for the RPC code %s',
+    (inputCode) => {
+      // Act
+      const actualResult = isStalePeerError(rpcError(inputCode));
+
+      // Assert
+      expect(actualResult).toBe(true);
+    },
+  );
+
+  it.each([
+    ['a flood wait code', rpcError(`FLOOD_WAIT_${INPUT_FLOOD_SECONDS}`)],
+    ['a GramJS flood wait', { errorMessage: 'FLOOD', seconds: INPUT_FLOOD_SECONDS }],
+    ['an invalid session code', rpcError('AUTH_KEY_UNREGISTERED')],
+    ['a connectivity failure', new Error('fake ECONNRESET')],
+    ['a plain Error naming a stale code', new Error('PEER_ID_INVALID fake detail')],
+    ['a GramJS username lookup failure', new Error(`${CHANNEL_LOOKUP_FAILURE_PREFIXES[0]} "x"`)],
+    ['null', null],
+    ['a string', 'CHANNEL_INVALID'],
+  ])('returns false for %s', (_label, inputError) => {
+    // Act
+    const actualResult = isStalePeerError(inputError);
+
+    // Assert
+    expect(actualResult).toBe(false);
+  });
 });
 
 describe('failWith', () => {
@@ -724,6 +800,24 @@ describe('failWith', () => {
       expect(mockError).not.toHaveBeenCalled();
     },
   );
+
+  it('logs a GramJS FloodWaitError as 429 (FLOOD_WAIT_N)', () => {
+    // Arrange
+    const inputError = Object.assign(new Error('fake A wait is required'), {
+      errorMessage: 'FLOOD',
+      seconds: INPUT_FLOOD_SECONDS,
+    });
+
+    // Act
+    const actualException = failWith(mockLogger, 'Posts: @fake_channel', inputError);
+
+    // Assert
+    expect(actualException).toBeInstanceOf(TooManyRequestsException);
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+    expect(mockWarn).toHaveBeenCalledWith(
+      `Posts: @fake_channel failed: ${HttpStatus.TOO_MANY_REQUESTS} (FLOOD_WAIT_${INPUT_FLOOD_SECONDS})`,
+    );
+  });
 
   it.each([
     ['a connectivity failure', new Error('fake ECONNRESET'), ServiceUnavailableException],

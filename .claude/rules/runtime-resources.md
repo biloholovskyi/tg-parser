@@ -27,6 +27,8 @@ A leaked resource here is not a latency problem, it is a recurring bill: a `Tele
 - PING_INTERVAL_S = 9 (GramJS internal, per connected client — not configurable)
 - SESSION_STORE_TTL_S = 30 days (a stored session unused this long expires in Redis; every use extends it) — `src/telegram/constants.ts`
 - REDIS_COMMAND_TIMEOUT_MS = 5000, REDIS_CONNECT_TIMEOUT_MS = 10_000, REDIS_MAX_RETRIES = 2 (per command), reconnect delay REDIS_RECONNECT_STEP_MS per attempt up to REDIS_RECONNECT_MAX_DELAY_MS = 30_000 — `src/redis/redis.constants.ts`
+- CHANNEL_PEER_TTL_S = 30 days (Redis, extended on use), CHANNEL_PEER_CACHE_MAX_ENTRIES = 500 (in-memory map without Redis, least recently used evicted) — `src/telegram/constants.ts`
+- DIGEST_FLOOD_WAIT_MAX_S = 30 min per wait, DIGEST_FLOOD_WAIT_TOTAL_MAX_S = 60 min per run, DIGEST_FLOOD_WAIT_MARGIN_S = 5 — `src/digest/constants.ts`
 - DIGEST_MAX_CHANNELS = 50, DIGEST_MAX_POSTS = 600, DIGEST_WINDOW_HOURS = 24 — `src/config/digest.config.ts`, `src/digest/constants.ts`
 - GROK_CALL_TIMEOUT_MS = 180_000 with GROK_MAX_RETRIES = 2 for translation batches and coverage follow-ups; GROK_SUMMARY_TIMEOUT_MS = 30 min for the one summary request, GROK_SUMMARY_MAX_RETRIES = 1 and no retry after its timeout; Grok calls go through an own undici `Agent` (headers and body timeouts = GROK_SUMMARY_TIMEOUT_MS) closed in `onModuleDestroy`; TRANSLATION_BUDGET_MS = 60 min (no new translation batch after it, nor after the first batch Grok fails); BOT_CALL_TIMEOUT_MS = 30_000 with BOT_MAX_RETRIES = 3 and BOT_MAX_RETRY_AFTER_S = 60 — `src/digest/constants.ts`
 - ALERT_CALL_TIMEOUT_MS = 10_000 with ALERT_MAX_RETRIES = 1 (network, timeout, 5xx only); ALERT_QUEUE_MAX_SIZE = 100, ALERT_MAX_CONCURRENT = 2, ALERT_DEDUP_WINDOW_MS = 10 min over at most ALERT_DEDUP_MAX_KEYS = 200 keys, ALERT_DRAIN_TIMEOUT_MS = 5000 (below SHUTDOWN_TIMEOUT_MS) — `src/alerts/constants.ts`
@@ -44,7 +46,7 @@ A leaked resource here is not a latency problem, it is a recurring bill: a `Tele
 - The Redis connection is opened by `src/redis/redis-client.ts` only, and closed in `onApplicationShutdown`, after every Telegram client is released. During an outage it reconnects at most once per REDIS_RECONNECT_MAX_DELAY_MS and logs one line per outage, not per attempt.
 - The digest job is registered in `SchedulerRegistry` only when the digest is configured, and is stopped and removed in `onModuleDestroy`.
 - Alerts never wait on the caller's path: `AlertService` queues and returns, the queue, concurrency and dedup map are bounded, a repeated warning or error inside ALERT_DEDUP_WINDOW_MS is counted instead of sent, `closeApplication` stops new alerts first (`beginShutdown`) so requests cut off by a deploy do not alert, and shutdown waits for the queue at most ALERT_DRAIN_TIMEOUT_MS. Grok's agent is destroyed, not closed, so a running summary request cannot hold shutdown.
-- One digest run at a time; its flag is released in `finally`. A run is bounded by the call timeouts and retries above, and reads channels strictly one after another.
+- One digest run at a time; its flag is released in `finally`. A run is bounded by the call timeouts and retries above and by the flood-wait limits, and reads channels strictly one after another. A flood wait is a cancellable timer (`unref()`, cleared on both paths); `DigestService.onModuleDestroy` aborts it and the run ends without sending.
 
 ## GramJS Client Baseline
 

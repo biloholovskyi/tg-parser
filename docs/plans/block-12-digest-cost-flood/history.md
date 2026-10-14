@@ -1,0 +1,28 @@
+- plan written 2026-10-14; user decisions: both translation switches (`DIGEST_TRANSLATION`, `GROK_TRANSLATION_MODEL`), flood handling = wait-and-resume plus channel peer cache in Redis (no partial digest), `DIGEST_POST_MAX_CHARS` = 1200, version 1.6.0.
+- phase-01 start 2026-10-14T11:23:27+03:00
+- phase-01 end 2026-10-14T11:30:25+03:00
+- Phase 01 handoff (2026-10-14):
+  - `ChannelPeerCache` (`src/telegram/channel-peer-cache.ts`) uses Redis whenever `REDIS_CLIENT` is set (independent of `SESSION_ENCRYPTION_KEY`), otherwise an LRU map of `CHANNEL_PEER_CACHE_MAX_ENTRIES`; Redis failures are a warn and a miss.
+  - `ChannelService` constructor is `(sessions, peers, alerts)`; stale-peer retry is in `readChannel`, one lookup at most.
+  - `describeError` gives `FLOOD_WAIT_{seconds}` for GramJS flood errors; `TooManyRequestsException.retryAfterSeconds` is what Phase 02 reads in `PostCollector`.
+  - Tests: `channel-peer-cache.spec.ts`, `channel.service.spec.ts` (new), `telegram.service.spec.ts` mock gained `InputPeerChannel`.
+  - Gap: no Nest DI test that `TelegramModule` resolves `ChannelPeerCache`; the smoke run in Finalize covers it.
+- phase-02 start 2026-10-14T11:34:35+03:00
+- phase-02 end 2026-10-14T11:40:21+03:00
+- Phase 02 handoff (2026-10-14):
+  - `PostCollector` constructor is `(telegram, alerts)`; `collect(channels, hoursBack, signal?)`; flood waits are summed without the margin against `DIGEST_FLOOD_WAIT_TOTAL_MAX_S`.
+  - `src/digest/utils/cancellable-delay.ts`: `DigestCancelledError`, `throwIfCancelled`, `delayUnlessCancelled` (rejects, never throws synchronously).
+  - `DigestService` implements `OnModuleDestroy`; a cancelled run logs one warn, sends nothing, raises no alert.
+  - Only the collection is cancellable; a run already in Grok or Bot calls finishes on its own timeouts.
+  - Phase 03 changes `buildReport` again: keep the `signal` argument passed to `collect`.
+- phase-03 start 2026-10-14T11:46:17+03:00
+- phase-03 end 2026-10-14T11:55:36+03:00
+- Phase 03 handoff (2026-10-14):
+  - `GROK_TRANSLATION_MODEL_DEFAULT` = `grok-4.20-0309-non-reasoning` (docs.x.ai 14.10.2026: $1.25 in / $2.50 out per 1M; grok-4.6 $2 / $6). json_schema support of that model is not stated in the docs: confirm on the Finalize smoke run.
+  - Fallback theses are translated with `TRANSLATION_SYSTEM_PROMPT` through the same batching as posts; no separate fallback prompt.
+  - Token usage goes through `GrokUsageMeter` passed in the request (`src/digest/grok/grok-usage.ts`), not through the return value; the summary log line has tokens but no model name (it uses GROK_MODEL).
+  - `parseReasoningEffort` became the generic `parseChoice` in `src/config/digest.config.ts`.
+  - Finalize: CLAUDE.md env table needs DIGEST_TRANSLATION, GROK_TRANSLATION_MODEL, GROK_TRANSLATION_REASONING_EFFORT; runtime-resources needs the flood-wait and peer-cache constants.
+- phase-04 start 2026-10-14T12:11:04+03:00
+- phase-04 end 2026-10-14T12:18:48+03:00
+- Phase 04 closeout (2026-10-14): post-code, e2e, inline audit, local smoke (boot only), docs drift, version 1.6.0 on r-1.6.0 (switched by the user at 11:02), reflect and report done; real Railway digest run pending with the user.

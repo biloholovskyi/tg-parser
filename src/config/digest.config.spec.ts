@@ -6,12 +6,19 @@ import {
   DIGEST_MAX_CHANNELS,
   DIGEST_TIMEZONE_DEFAULT,
   DIGEST_TIMEZONE_ENV_VAR,
+  DIGEST_TRANSLATION_DEFAULT,
+  DIGEST_TRANSLATION_ENV_VAR,
+  DIGEST_TRANSLATION_MODES,
   GROK_API_KEY_ENV_VAR,
   GROK_MODEL_DEFAULT,
   GROK_MODEL_ENV_VAR,
   GROK_REASONING_EFFORT_DEFAULT,
   GROK_REASONING_EFFORT_ENV_VAR,
   GROK_REASONING_EFFORTS,
+  GROK_TRANSLATION_MODEL_DEFAULT,
+  GROK_TRANSLATION_MODEL_ENV_VAR,
+  GROK_TRANSLATION_REASONING_EFFORT_DEFAULT,
+  GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR,
   TELEGRAM_BOT_CHAT_ID_ENV_VAR,
   TELEGRAM_BOT_TOKEN_ENV_VAR,
   getDigestConfig,
@@ -25,6 +32,9 @@ const ALL_ENV_VARS = [
   GROK_API_KEY_ENV_VAR,
   GROK_MODEL_ENV_VAR,
   GROK_REASONING_EFFORT_ENV_VAR,
+  DIGEST_TRANSLATION_ENV_VAR,
+  GROK_TRANSLATION_MODEL_ENV_VAR,
+  GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR,
   TELEGRAM_BOT_TOKEN_ENV_VAR,
   TELEGRAM_BOT_CHAT_ID_ENV_VAR,
 ];
@@ -240,6 +250,9 @@ describe('getDigestConfig', () => {
         grokApiKey: inputGrokKey,
         grokModel: expectedModel,
         grokReasoningEffort: GROK_REASONING_EFFORT_DEFAULT,
+        translationMode: DIGEST_TRANSLATION_DEFAULT,
+        grokTranslationModel: GROK_TRANSLATION_MODEL_DEFAULT,
+        grokTranslationReasoningEffort: GROK_TRANSLATION_REASONING_EFFORT_DEFAULT,
         botToken: inputBotToken,
         botChatId: inputBotChatId,
         isConfigured: true,
@@ -355,6 +368,211 @@ describe('getDigestConfig', () => {
     });
   });
 
+  describe('translationMode', () => {
+    it('defaults to off without a warning when unset', () => {
+      // Arrange
+      setCompleteEnv();
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(DIGEST_TRANSLATION_DEFAULT).toBe('off');
+      expect(actualConfig.translationMode).toBe('off');
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
+
+    it('allows exactly off and on', () => {
+      // Assert
+      expect([...DIGEST_TRANSLATION_MODES]).toEqual(['off', 'on']);
+    });
+
+    it.each([
+      ['off', 'off'],
+      ['on', 'on'],
+      ['ON', 'on'],
+      [' On ', 'on'],
+      ['OFF', 'off'],
+    ])('accepts %p case-insensitively and trimmed as %s', (inputRaw, expectedMode) => {
+      // Arrange
+      setCompleteEnv();
+      process.env[DIGEST_TRANSLATION_ENV_VAR] = inputRaw;
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.translationMode).toBe(expectedMode);
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
+
+    it('falls back to off with one warning naming the variable for an unknown value', () => {
+      // Arrange
+      setCompleteEnv();
+      process.env[DIGEST_TRANSLATION_ENV_VAR] = 'always';
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      const actualText = warnings().join(' | ');
+      expect(actualConfig.translationMode).toBe(DIGEST_TRANSLATION_DEFAULT);
+      expect(actualConfig.isConfigured).toBe(true);
+      expect(mockWarn).toHaveBeenCalledTimes(1);
+      expect(actualText).toContain(DIGEST_TRANSLATION_ENV_VAR);
+      expect(actualText).toContain('always');
+      expect(actualText).not.toContain(inputGrokKey);
+      expect(actualText).not.toContain(inputBotToken);
+      expect(actualText).not.toContain(inputBotChatId);
+    });
+  });
+
+  describe('grokTranslationModel', () => {
+    it('defaults to GROK_TRANSLATION_MODEL_DEFAULT, not to GROK_MODEL', () => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_MODEL_ENV_VAR] = 'fake-main-model';
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(GROK_TRANSLATION_MODEL_DEFAULT).toBe('grok-4.20-0309-non-reasoning');
+      expect(actualConfig.grokTranslationModel).toBe(GROK_TRANSLATION_MODEL_DEFAULT);
+      expect(actualConfig.grokModel).toBe('fake-main-model');
+    });
+
+    it('treats a whitespace-only value as unset', () => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_TRANSLATION_MODEL_ENV_VAR] = '   ';
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.grokTranslationModel).toBe(GROK_TRANSLATION_MODEL_DEFAULT);
+    });
+
+    it('uses a trimmed override and leaves GROK_MODEL at its default', () => {
+      // Arrange
+      setCompleteEnv();
+      const expectedModel = 'fake-translation-model';
+      process.env[GROK_TRANSLATION_MODEL_ENV_VAR] = ` ${expectedModel} `;
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.grokTranslationModel).toBe(expectedModel);
+      expect(actualConfig.grokModel).toBe(GROK_MODEL_DEFAULT);
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('grokTranslationReasoningEffort', () => {
+    it('defaults to off without a warning when unset', () => {
+      // Arrange
+      setCompleteEnv();
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(GROK_TRANSLATION_REASONING_EFFORT_DEFAULT).toBe('off');
+      expect(actualConfig.grokTranslationReasoningEffort).toBe('off');
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
+
+    it.each([...GROK_REASONING_EFFORTS])('accepts %s without a warning', (inputEffort) => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR] = inputEffort;
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.grokTranslationReasoningEffort).toBe(inputEffort);
+      expect(mockWarn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['LOW', 'low'],
+      [' XHigh ', 'xhigh'],
+    ])('accepts %p case-insensitively and trimmed as %s', (inputRaw, expectedEffort) => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR] = inputRaw;
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.grokTranslationReasoningEffort).toBe(expectedEffort);
+    });
+
+    it('falls back to off with one warning naming the variable for an unknown value', () => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR] = 'maximum';
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      const actualText = warnings().join(' | ');
+      expect(actualConfig.grokTranslationReasoningEffort).toBe(
+        GROK_TRANSLATION_REASONING_EFFORT_DEFAULT,
+      );
+      expect(mockWarn).toHaveBeenCalledTimes(1);
+      expect(actualText).toContain(GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR);
+      expect(actualText).not.toContain(inputGrokKey);
+      expect(actualText).not.toContain(inputBotToken);
+    });
+
+    it('is parsed independently of GROK_REASONING_EFFORT', () => {
+      // Arrange
+      setCompleteEnv();
+      process.env[GROK_REASONING_EFFORT_ENV_VAR] = 'high';
+      process.env[GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR] = 'bogus';
+
+      // Act
+      const actualConfig = getDigestConfig();
+
+      // Assert
+      expect(actualConfig.grokReasoningEffort).toBe('high');
+      expect(actualConfig.grokTranslationReasoningEffort).toBe(
+        GROK_TRANSLATION_REASONING_EFFORT_DEFAULT,
+      );
+      expect(mockWarn).toHaveBeenCalledTimes(1);
+      expect(warnings()[0]).toContain(GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR);
+    });
+  });
+
+  it('warns once per unknown variable when all three choices are unknown', () => {
+    // Arrange
+    setCompleteEnv();
+    process.env[GROK_REASONING_EFFORT_ENV_VAR] = 'bogus-one';
+    process.env[DIGEST_TRANSLATION_ENV_VAR] = 'bogus-two';
+    process.env[GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR] = 'bogus-three';
+
+    // Act
+    getDigestConfig();
+
+    // Assert
+    const actualWarnings = warnings();
+    const expectedVariables = [
+      GROK_REASONING_EFFORT_ENV_VAR,
+      DIGEST_TRANSLATION_ENV_VAR,
+      GROK_TRANSLATION_REASONING_EFFORT_ENV_VAR,
+    ];
+    expect(actualWarnings).toHaveLength(expectedVariables.length);
+    for (const name of expectedVariables) {
+      expect(actualWarnings.filter((text) => text.startsWith(`${name}=`))).toHaveLength(1);
+    }
+  });
+
   describe('isConfigured', () => {
     it('is true with no warning when channels, Grok key and bot target are set', () => {
       // Arrange
@@ -462,6 +680,9 @@ describe('missingDigestVariables', () => {
       grokApiKey: inputGrokKey,
       grokModel: GROK_MODEL_DEFAULT,
       grokReasoningEffort: GROK_REASONING_EFFORT_DEFAULT,
+      translationMode: DIGEST_TRANSLATION_DEFAULT,
+      grokTranslationModel: GROK_TRANSLATION_MODEL_DEFAULT,
+      grokTranslationReasoningEffort: GROK_TRANSLATION_REASONING_EFFORT_DEFAULT,
       botToken: inputBotToken,
       botChatId: inputBotChatId,
       ...overrides,

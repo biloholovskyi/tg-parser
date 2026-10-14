@@ -170,3 +170,22 @@ attaches real process handlers. See also [[project-test-run-environment]].
     `response.body?.cancel()`, so a fake fetch answer is either `new Response(null, ...)` or an object with
     `body: { cancel: jest.fn() }`. Even a quoted `<<'EOF'` Bash heredoc here collapsed `\n` in a Python
     script into a real newline inside a TS string: write edit scripts with the Write tool when they carry backslashes.
+
+25. Block-12 channel peer cache: `ChannelService` checks `instanceof Api.InputPeerChannel` and builds one
+    with `returnBigInt` (real `telegram/Helpers`), so every `telegram/tl` mock reaching ChannelService needs
+    an `InputPeerChannel` class. A plain-object `getInputEntity` result is deliberately not cached, which keeps
+    old "lookup once per read" assertions valid. A direct `channel.service.spec.ts` avoids loading GramJS by
+    `jest.mock('./session-store', () => ({ SessionStore: class {} }))` and the same for `AlertService`; build
+    real peers with `bigInt` from `big-integer`. GramJS FloodWaitError shape: `{ errorMessage: 'FLOOD', seconds }`.
+
+26. Block-12 flood wait: `DigestService` specs drive background runs with `flushBackground()` (setImmediate
+    loop), so fake timers there must be `jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })`;
+    a fake collector that "waits on a flood limit" uses the real `delayUnlessCancelled(longMs, signal)` and
+    `jest.getTimerCount()` proves the timer is gone after `onModuleDestroy()`. `delayUnlessCancelled` throws
+    synchronously on an already-aborted signal: assert it through an `async` wrapper, as callers `await` it.
+
+27. Block-12 phase 03 (digest cost): `GrokClient` is mocked in Translation/Summary specs, so token counts are
+    simulated by `mockCompleteJson.mockImplementation(async (r) => { r.meter?.add(usage); ... })`; exact
+    `toEqual` on a request must include `meter` (`expect.any(GrokUsageMeter)` or the first call's meter).
+    `digest.service.spec.ts` `buildConfig(isConfigured, translationMode = 'on')` keeps the older suites on the
+    translate-first path; `DIGEST_TRANSLATION=off` tests pass `'off'` explicitly and mock `translateTheses`.

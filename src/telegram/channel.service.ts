@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { TelegramClient } from 'telegram';
+import { returnBigInt } from 'telegram/Helpers';
 import { Api } from 'telegram/tl';
 import { AlertService } from '../alerts/alert.service';
 import { MS_IN_SECOND } from '../shared/constants/rate-limit.constants';
@@ -9,10 +10,12 @@ import {
   POSTS_PAGE_SIZE,
   SECONDS_IN_HOUR,
 } from './constants';
+import { ChannelPeerCache } from './channel-peer-cache';
+import type { ChannelPeer } from './channel-peer-cache';
 import type { GetPostsResponse } from './interfaces/message.interface';
 import { SessionStore } from './session-store';
 import { toTelegramPost } from './utils/message.mapper';
-import { failWith } from './utils/telegram-errors';
+import { failWith, isStalePeerError } from './utils/telegram-errors';
 import { withTimeout } from './utils/with-timeout';
 
 interface PageRequest {
@@ -26,6 +29,18 @@ interface ChannelWalk {
   windowStart: number;
 }
 
+interface ChannelRead {
+  client: TelegramClient;
+  sessionString: string;
+  channelUsername: string;
+  windowStart: number;
+}
+
+interface WalkResult {
+  messages: Api.Message[];
+  isTruncated: boolean;
+}
+
 /** Reads channel history newest-first inside a time window, capped at POSTS_MAX_MESSAGES. */
 @Injectable()
 export class ChannelService {
@@ -33,6 +48,7 @@ export class ChannelService {
 
   constructor(
     private readonly sessions: SessionStore,
+    private readonly peers: ChannelPeerCache,
     private readonly alerts: AlertService,
   ) {}
 
@@ -48,8 +64,8 @@ export class ChannelService {
     try {
       const client = await this.sessions.getConnected(sessionString);
       const windowStart = Math.floor(Date.now() / MS_IN_SECOND) - hoursBack * SECONDS_IN_HOUR;
-      const walk = await this.openWalk(client, channelUsername, windowStart);
-      const { messages, isTruncated } = await this.walkChannel(walk);
+      const read = { client, sessionString, channelUsername, windowStart };
+      const { messages, isTruncated } = await this.readChannel(read);
       const posts = messages.map((message) => toTelegramPost(message, channelUsername));
       this.logger.log(
         `Posts: @${channelUsername} ${hoursBack}h -> ${posts.length} posts, truncated=${isTruncated}`,
@@ -64,26 +80,48 @@ export class ChannelService {
     }
   }
 
-  private async openWalk(
-    client: TelegramClient,
-    channelUsername: string,
-    windowStart: number,
-  ): Promise<ChannelWalk> {
+  /**
+   * Reads through the cached peer when there is one. A read the cache may have caused to fail
+   * (stale id or access hash) drops the entry and falls back to one username lookup.
+   */
+  private async readChannel(read: ChannelRead): Promise<WalkResult> {
+    const { client, sessionString, channelUsername, windowStart } = read;
+    const cached = await this.peers.get(sessionString, channelUsername);
+    if (cached) {
+      try {
+        return await this.walkChannel({ client, channel: toInputPeer(cached), windowStart });
+      } catch (error: unknown) {
+        if (!isStalePeerError(error)) {
+          throw error;
+        }
+        await this.peers.remove(sessionString, channelUsername);
+      }
+    }
+    const channel = await this.resolveChannel(read);
+    return this.walkChannel({ client, channel, windowStart });
+  }
+
+  /** Username lookup, a request with a tight daily limit; a channel peer is cached for next time. */
+  private async resolveChannel(read: ChannelRead): Promise<Api.TypeInputPeer> {
     const channel = await withTimeout(
-      client.getInputEntity(channelUsername),
+      read.client.getInputEntity(read.channelUsername),
       EXTERNAL_CALL_TIMEOUT_MS,
       'Resolve channel',
     );
-    return { client, channel, windowStart };
+    if (channel instanceof Api.InputPeerChannel) {
+      await this.peers.set(read.sessionString, read.channelUsername, {
+        channelId: channel.channelId.toString(),
+        accessHash: channel.accessHash.toString(),
+      });
+    }
+    return channel;
   }
 
   /**
    * Walks page by page until a message leaves the window, the history ends,
    * or POSTS_MAX_MESSAGES is reached.
    */
-  private async walkChannel(
-    walk: ChannelWalk,
-  ): Promise<{ messages: Api.Message[]; isTruncated: boolean }> {
+  private async walkChannel(walk: ChannelWalk): Promise<WalkResult> {
     const { windowStart } = walk;
     const messages: Api.Message[] = [];
     let walked = 0;
@@ -117,6 +155,13 @@ export class ChannelService {
     );
     return [...result];
   }
+}
+
+function toInputPeer(peer: ChannelPeer): Api.InputPeerChannel {
+  return new Api.InputPeerChannel({
+    channelId: returnBigInt(peer.channelId),
+    accessHash: returnBigInt(peer.accessHash),
+  });
 }
 
 /** A regular post (not a service message) dated inside the window. */

@@ -6,11 +6,20 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
+import type { AlertService } from '../alerts/alert.service';
+import { MS_IN_SECOND } from '../shared/constants/rate-limit.constants';
 import { TooManyRequestsException } from '../shared/exceptions/too-many-requests.exception';
 import type { GetPostsResponse, TelegramPost } from '../telegram/interfaces/message.interface';
 import { TelegramService } from '../telegram/telegram.service';
-import { DIGEST_POST_MAX_CHARS, POST_REF_PREFIX } from './constants';
+import {
+  DIGEST_FLOOD_WAIT_MARGIN_S,
+  DIGEST_FLOOD_WAIT_MAX_S,
+  DIGEST_FLOOD_WAIT_TOTAL_MAX_S,
+  DIGEST_POST_MAX_CHARS,
+  POST_REF_PREFIX,
+} from './constants';
 import { PostCollector } from './post-collector';
+import { DigestCancelledError } from './utils/cancellable-delay';
 
 /** The real facade loads GramJS at import time; the collector only needs the class token. */
 jest.mock('../telegram/telegram.service', () => ({ TelegramService: class {} }));
@@ -19,6 +28,9 @@ type ReadPosts = jest.Mock<Promise<GetPostsResponse>, [string, number]>;
 
 const INPUT_HOURS_BACK = 24;
 const INPUT_FLOOD_SECONDS = 30;
+/** One second above the single-wait ceiling: never sat out. */
+const INPUT_FLOOD_TOO_LONG_S = DIGEST_FLOOD_WAIT_MAX_S + 1;
+const FLOOD_WAIT_ALERT = 'Digest waiting for Telegram flood limit';
 const BASE_DATE_MS = Date.UTC(2026, 0, 1);
 const MINUTE_MS = 60_000;
 const inputChannelA = 'fake_channel_a';
@@ -52,6 +64,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 describe('PostCollector', () => {
   let mockReadPosts: ReadPosts;
+  let mockAlerts: { info: jest.Mock; warning: jest.Mock; error: jest.Mock };
   let collector: PostCollector;
   let loggerSpies: jest.SpyInstance[];
 
@@ -69,7 +82,11 @@ describe('PostCollector', () => {
   beforeEach(() => {
     mockReadPosts = jest.fn();
     const mockTelegram = { readPostsAsDigestAccount: mockReadPosts };
-    collector = new PostCollector(mockTelegram as unknown as TelegramService);
+    mockAlerts = { info: jest.fn(), warning: jest.fn(), error: jest.fn() };
+    collector = new PostCollector(
+      mockTelegram as unknown as TelegramService,
+      mockAlerts as unknown as AlertService,
+    );
     loggerSpies = LOGGER_LEVELS.map((level) =>
       jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined),
     );
@@ -242,7 +259,7 @@ describe('PostCollector', () => {
 
   it.each([
     ['401 session missing or rejected', new UnauthorizedException('fake unauthorized')],
-    ['429 flood wait', new TooManyRequestsException(INPUT_FLOOD_SECONDS)],
+    ['429 flood wait above the wait ceiling', new TooManyRequestsException(INPUT_FLOOD_TOO_LONG_S)],
     ['503 transport failure', new ServiceUnavailableException('fake unreachable')],
     ['a non-HTTP error', new Error('fake unexpected')],
   ])('aborts the whole run on %s without reading further channels', async (_label, inputError) => {
@@ -260,6 +277,7 @@ describe('PostCollector', () => {
     // Assert
     await expect(actualResult).rejects.toBe(inputError);
     expect(mockReadPosts).toHaveBeenCalledTimes(2);
+    expect(mockAlerts.warning).not.toHaveBeenCalled();
   });
 
   it('requests the next channel only after the previous one has resolved', async () => {
@@ -338,5 +356,221 @@ describe('PostCollector', () => {
     expect(actualText).not.toContain(inputSecretText);
     expect(actualText).not.toContain(inputChannelA);
     expect(actualText).not.toContain(inputChannelB);
+  });
+
+  describe('flood wait', () => {
+    /** What the collector sleeps for a Telegram wait of `seconds`: the wait plus the margin. */
+    function floodWaitMs(seconds: number): number {
+      return (seconds + DIGEST_FLOOD_WAIT_MARGIN_S) * MS_IN_SECOND;
+    }
+
+    function warnSpy(): jest.SpyInstance {
+      return loggerSpies[LOGGER_LEVELS.indexOf('warn')];
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('sits out the wait plus margin, reads the same channel again and continues', async () => {
+      // Arrange
+      const inputFlood = new TooManyRequestsException(INPUT_FLOOD_SECONDS);
+      mockReadPosts
+        .mockResolvedValueOnce(buildResponse([buildPost(1, 0)]))
+        .mockRejectedValueOnce(inputFlood)
+        .mockResolvedValueOnce(buildResponse([buildPost(2, 0)]))
+        .mockResolvedValueOnce(buildResponse([buildPost(3, 0)]));
+
+      // Act
+      const actualPromise = collector.collect(
+        [inputChannelA, inputChannelB, inputChannelC],
+        INPUT_HOURS_BACK,
+      );
+      await jest.advanceTimersByTimeAsync(floodWaitMs(INPUT_FLOOD_SECONDS) - 1);
+      const actualCallsBeforeWaitEnds = mockReadPosts.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(1);
+      const actualResult = await actualPromise;
+
+      // Assert
+      expect(actualCallsBeforeWaitEnds).toBe(2);
+      expect(mockReadPosts.mock.calls.map(([channel]) => channel)).toEqual([
+        inputChannelA,
+        inputChannelB,
+        inputChannelB,
+        inputChannelC,
+      ]);
+      expect(actualResult.posts.map((post) => [post.channel, post.ref])).toEqual([
+        [inputChannelA, `${POST_REF_PREFIX}1`],
+        [inputChannelB, `${POST_REF_PREFIX}2`],
+        [inputChannelC, `${POST_REF_PREFIX}3`],
+      ]);
+      expect(actualResult.unavailableChannels).toEqual([]);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('sends one alert and one warn line per wait, naming the channel and seconds', async () => {
+      // Arrange
+      mockReadPosts
+        .mockRejectedValueOnce(new TooManyRequestsException(INPUT_FLOOD_SECONDS))
+        .mockResolvedValueOnce(buildResponse([buildPost(1, 0)]))
+        .mockResolvedValueOnce(buildResponse([buildPost(2, 0)]));
+
+      // Act
+      const actualPromise = collector.collect([inputChannelA, inputChannelB], INPUT_HOURS_BACK);
+      await jest.advanceTimersByTimeAsync(floodWaitMs(INPUT_FLOOD_SECONDS));
+      await actualPromise;
+
+      // Assert
+      expect(mockAlerts.warning).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.warning).toHaveBeenCalledWith(FLOOD_WAIT_ALERT, {
+        channel: inputChannelA,
+        seconds: INPUT_FLOOD_SECONDS,
+      });
+      expect(mockAlerts.error).not.toHaveBeenCalled();
+      expect(warnSpy()).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy().mock.calls[0][0])).toContain(`${INPUT_FLOOD_SECONDS} s`);
+    });
+
+    it('rethrows a 429 above DIGEST_FLOOD_WAIT_MAX_S at once, without waiting or alerting', async () => {
+      // Arrange
+      const inputFlood = new TooManyRequestsException(INPUT_FLOOD_TOO_LONG_S);
+      mockReadPosts.mockRejectedValueOnce(inputFlood);
+
+      // Act
+      const actualPromise = collector.collect([inputChannelA, inputChannelB], INPUT_HOURS_BACK);
+
+      // Assert
+      await expect(actualPromise).rejects.toBe(inputFlood);
+      expect(mockReadPosts).toHaveBeenCalledTimes(1);
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+      expect(warnSpy()).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('sits out waits of exactly DIGEST_FLOOD_WAIT_MAX_S and a run total of exactly DIGEST_FLOOD_WAIT_TOTAL_MAX_S', async () => {
+      // Arrange
+      const inputSecondWaitS = DIGEST_FLOOD_WAIT_TOTAL_MAX_S - DIGEST_FLOOD_WAIT_MAX_S;
+      mockReadPosts
+        .mockRejectedValueOnce(new TooManyRequestsException(DIGEST_FLOOD_WAIT_MAX_S))
+        .mockRejectedValueOnce(new TooManyRequestsException(inputSecondWaitS))
+        .mockResolvedValueOnce(buildResponse([buildPost(1, 0)]));
+
+      // Act
+      const actualPromise = collector.collect([inputChannelA], INPUT_HOURS_BACK);
+      await jest.advanceTimersByTimeAsync(
+        floodWaitMs(DIGEST_FLOOD_WAIT_MAX_S) + floodWaitMs(inputSecondWaitS),
+      );
+      const actualResult = await actualPromise;
+
+      // Assert
+      expect(inputSecondWaitS).toBeLessThanOrEqual(DIGEST_FLOOD_WAIT_MAX_S);
+      expect(mockReadPosts).toHaveBeenCalledTimes(3);
+      expect(actualResult.posts).toHaveLength(1);
+      expect(mockAlerts.warning.mock.calls.map(([, context]) => context)).toEqual([
+        { channel: inputChannelA, seconds: DIGEST_FLOOD_WAIT_MAX_S },
+        { channel: inputChannelA, seconds: inputSecondWaitS },
+      ]);
+    });
+
+    it('rethrows the 429 whose wait pushes the run total over DIGEST_FLOOD_WAIT_TOTAL_MAX_S', async () => {
+      // Arrange
+      const inputSecondWaitS = DIGEST_FLOOD_WAIT_TOTAL_MAX_S - DIGEST_FLOOD_WAIT_MAX_S;
+      const inputCrossingFlood = new TooManyRequestsException(1);
+      mockReadPosts
+        .mockRejectedValueOnce(new TooManyRequestsException(DIGEST_FLOOD_WAIT_MAX_S))
+        .mockResolvedValueOnce(buildResponse([buildPost(1, 0)]))
+        .mockRejectedValueOnce(new TooManyRequestsException(inputSecondWaitS))
+        .mockResolvedValueOnce(buildResponse([buildPost(2, 0)]))
+        .mockRejectedValueOnce(inputCrossingFlood);
+
+      // Act
+      const actualPromise = collector.collect(
+        [inputChannelA, inputChannelB, inputChannelC],
+        INPUT_HOURS_BACK,
+      );
+      const actualAssertion = expect(actualPromise).rejects.toBe(inputCrossingFlood);
+      await jest.advanceTimersByTimeAsync(
+        floodWaitMs(DIGEST_FLOOD_WAIT_MAX_S) + floodWaitMs(inputSecondWaitS),
+      );
+
+      // Assert
+      await actualAssertion;
+      expect(mockReadPosts.mock.calls.map(([channel]) => channel)).toEqual([
+        inputChannelA,
+        inputChannelA,
+        inputChannelB,
+        inputChannelB,
+        inputChannelC,
+      ]);
+      expect(mockAlerts.warning).toHaveBeenCalledTimes(2);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('rejects with DigestCancelledError at once when aborted during a wait and reads nothing more', async () => {
+      // Arrange
+      const inputController = new AbortController();
+      mockReadPosts
+        .mockRejectedValueOnce(new TooManyRequestsException(INPUT_FLOOD_SECONDS))
+        .mockResolvedValue(buildResponse([buildPost(1, 0)]));
+      const actualPromise = collector.collect(
+        [inputChannelA, inputChannelB],
+        INPUT_HOURS_BACK,
+        inputController.signal,
+      );
+      const actualAssertion = expect(actualPromise).rejects.toBeInstanceOf(DigestCancelledError);
+      await jest.advanceTimersByTimeAsync(0);
+      const actualTimersWhileWaiting = jest.getTimerCount();
+
+      // Act
+      inputController.abort();
+
+      // Assert
+      await actualAssertion;
+      expect(actualTimersWhileWaiting).toBe(1);
+      expect(mockReadPosts).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('reads nothing when the signal has aborted before collect starts', async () => {
+      // Arrange
+      const inputController = new AbortController();
+      inputController.abort();
+
+      // Act
+      const actualPromise = collector.collect(
+        [inputChannelA, inputChannelB],
+        INPUT_HOURS_BACK,
+        inputController.signal,
+      );
+
+      // Assert
+      await expect(actualPromise).rejects.toBeInstanceOf(DigestCancelledError);
+      expect(mockReadPosts).not.toHaveBeenCalled();
+      expect(mockAlerts.warning).not.toHaveBeenCalled();
+    });
+
+    it('checks for cancellation before each channel read', async () => {
+      // Arrange
+      const inputController = new AbortController();
+      mockReadPosts.mockImplementationOnce(async () => {
+        inputController.abort();
+        return buildResponse([buildPost(1, 0)]);
+      });
+
+      // Act
+      const actualPromise = collector.collect(
+        [inputChannelA, inputChannelB],
+        INPUT_HOURS_BACK,
+        inputController.signal,
+      );
+
+      // Assert
+      await expect(actualPromise).rejects.toBeInstanceOf(DigestCancelledError);
+      expect(mockReadPosts).toHaveBeenCalledTimes(1);
+    });
   });
 });

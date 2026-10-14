@@ -5,6 +5,7 @@ import { ApiKeyGuard } from '../shared/guards/api-key.guard';
 import { PhoneRateLimitGuard } from '../shared/guards/phone-rate-limit.guard';
 import { RateLimitGuard } from '../shared/guards/rate-limit.guard';
 import { AuthService } from './auth.service';
+import { ChannelPeerCache } from './channel-peer-cache';
 import { ChannelService } from './channel.service';
 import { SessionRepository } from './session-repository';
 import { SessionStore } from './session-store';
@@ -20,6 +21,7 @@ import { TelegramController } from './telegram.controller';
     SessionRepository,
     SessionStore,
     AuthService,
+    ChannelPeerCache,
     ChannelService,
     TelegramService,
     // Order matters: an unauthenticated caller is rejected before any counter is touched.
