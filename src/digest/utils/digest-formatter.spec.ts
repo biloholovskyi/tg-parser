@@ -186,8 +186,8 @@ describe('formatDigest', () => {
     });
   });
 
-  describe('media-only block', () => {
-    it('lists posts without text under their own heading and counts them as covered', () => {
+  describe('media-only posts', () => {
+    it('leaves posts without text out of the message and out of the coverage count', () => {
       // Arrange
       const inputPosts = [buildPost(1), buildPost(2, false), buildPost(3, false)];
       const inputReport = buildReport({ posts: inputPosts, topics: [buildTopic(['p1'])] });
@@ -196,19 +196,10 @@ describe('formatDigest', () => {
       const actualText = formatDigest(inputReport).join('\n');
 
       // Assert
-      expect(actualText).toContain(
-        '<b>Посты без текста</b>\n<a href="https://t.me/fake_channel/2">@fake_channel/2</a>' +
-          ' · <a href="https://t.me/fake_channel/3">@fake_channel/3</a>',
-      );
-      expect(actualText).toContain('<i>Учтено 3 из 3 постов</i>');
-    });
-
-    it('has no media-only block when every post has text', () => {
-      // Act
-      const actualText = formatDigest(buildReport()).join('\n');
-
-      // Assert
       expect(actualText).not.toContain('Посты без текста');
+      expect(actualText).not.toContain('https://t.me/fake_channel/2');
+      expect(actualText).not.toContain('https://t.me/fake_channel/3');
+      expect(actualText).toContain('<i>Учтено 1 из 1 постов</i>');
     });
   });
 
@@ -324,16 +315,17 @@ describe('formatDigest', () => {
       }
     });
 
-    it('prints every post link once and reports N of N covered', () => {
+    it('prints every text post link once and reports N of N covered', () => {
       // Arrange
       const inputReport = buildBigReport();
+      const expectedCount = inputReport.posts.filter((post) => post.hasText).length;
 
       // Act
       const actualText = formatDigest(inputReport).join('\n');
 
       // Assert
-      expect(countOf(actualText, '<a ')).toBe(BIG_POST_COUNT);
-      expect(actualText).toContain(`<i>Учтено ${BIG_POST_COUNT} из ${BIG_POST_COUNT} постов</i>`);
+      expect(countOf(actualText, '<a ')).toBe(expectedCount);
+      expect(actualText).toContain(`<i>Учтено ${expectedCount} из ${expectedCount} постов</i>`);
     });
 
     it('cuts a single thesis longer than one message without exceeding the limit', () => {

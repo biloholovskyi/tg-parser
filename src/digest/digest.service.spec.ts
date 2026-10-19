@@ -425,7 +425,7 @@ describe('DigestService', () => {
       expect(actualText).toContain(`• ${SECRET_TRANSLATED} p2`);
       expect(actualText).toContain('Блоков без группировки: 2');
       expect(actualText).toContain('Саммари не собрано, посты перечислены списком');
-      expect(actualText).toContain('Учтено 3 из 3 постов');
+      expect(actualText).toContain('Учтено 2 из 2 постов');
       expect(loggerSpies.error).not.toHaveBeenCalled();
     });
 
