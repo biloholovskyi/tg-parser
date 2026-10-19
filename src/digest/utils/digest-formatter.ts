@@ -10,11 +10,9 @@ const LIST_SEPARATOR = ', ';
 /** Renders a run into Telegram HTML messages, each within BOT_MESSAGE_MAX_CHARS. Pure. */
 export function formatDigest(report: DigestReport): string[] {
   const byRef = new Map(report.posts.map((post) => [post.ref, post]));
-  const mediaOnly = report.posts.filter((post) => !post.hasText);
   const blocks = [
     headerBlock(report),
     ...report.topics.map((topic) => topicBlock(topic, byRef)),
-    ...(mediaOnly.length > 0 ? [mediaOnlyBlock(mediaOnly)] : []),
     footerBlock(report),
   ];
   return splitMessages(blocks, BOT_MESSAGE_MAX_CHARS);
@@ -51,11 +49,6 @@ function topicBlock(topic: DigestTopic, byRef: Map<string, TranslatedPost>): str
   return [...lines, ...linkLines(links)].join('\n');
 }
 
-function mediaOnlyBlock(posts: TranslatedPost[]): string {
-  const links = posts.map((post) => postLink(post.url, post.channel));
-  return ['<b>Посты без текста</b>', ...linkLines(links)].join('\n');
-}
-
 function linkLines(links: string[]): string[] {
   const lines: string[] = [];
   for (let start = 0; start < links.length; start += DIGEST_LINKS_PER_LINE) {
@@ -65,9 +58,10 @@ function linkLines(links: string[]): string[] {
 }
 
 function footerBlock(report: DigestReport): string {
-  const counted = countCovered(report);
+  const textPosts = report.posts.filter((post) => post.hasText);
+  const counted = countCovered(report.topics, textPosts);
   const { unavailableChannels, truncatedChannels } = report.collected;
-  const lines = [`Учтено ${counted} из ${report.posts.length} постов`];
+  const lines = [`Учтено ${counted} из ${textPosts.length} постов`];
   addLine(
     lines,
     unavailableChannels.length > 0,
@@ -90,10 +84,10 @@ function footerBlock(report: DigestReport): string {
   return lines.map((line) => `<i>${line}</i>`).join('\n');
 }
 
-/** Posts that appear in the message: referenced by a topic, or listed as media-only. */
-function countCovered(report: DigestReport): number {
-  const covered = new Set(report.topics.flatMap((topic) => topic.refs));
-  return report.posts.filter((post) => !post.hasText || covered.has(post.ref)).length;
+/** Text posts referenced by a topic. Media-only posts are left out of the digest on purpose. */
+function countCovered(topics: DigestTopic[], textPosts: TranslatedPost[]): number {
+  const covered = new Set(topics.flatMap((topic) => topic.refs));
+  return textPosts.filter((post) => covered.has(post.ref)).length;
 }
 
 function channelList(channels: string[]): string {
